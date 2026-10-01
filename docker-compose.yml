@@ -1,0 +1,92 @@
+# Hạ tầng local cho hệ đa-agent du lịch (LangGraph).
+#
+#   docker compose up -d                       -> redis + postgres (mặc định)
+#   docker compose --profile ui up -d          -> + RedisInsight (xem checkpoint, cache, stream)
+#   docker compose --profile routing up -d     -> + OSRM car/foot (cần chạy `make osrm-prepare` trước)
+#
+# LangSmith và Langfuse dùng bản Cloud nên không có container ở đây.
+# Mọi port chỉ bind vào 127.0.0.1 để không lộ ra mạng LAN.
+
+name: ailusion
+
+services:
+  # Bộ nhớ ngắn hạn: checkpointer LangGraph (graph state, chuỗi what-if),
+  # cache kết quả tool, stream nhật ký agent cho web app.
+  # Redis 8 đã gói sẵn Query Engine (RediSearch) + JSON mà langgraph-checkpoint-redis cần;
+  # entrypoint của image tự --loadmodule kể cả khi truyền file config riêng.
+  redis:
+    image: redis:8.2
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Bộ nhớ dài hạn: hồ sơ người dùng, kho tri thức, hiệu chỉnh sai số, thói quen
+  # (LangGraph PostgresStore + pgvector cho tìm kiếm ngữ nghĩa).
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ailusion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ailusion}
+      POSTGRES_DB: ${POSTGRES_DB:-ailusion}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # (tuỳ chọn) Giao diện xem Redis: http://localhost:5540
+  # Khi thêm database trong UI, dùng host "redis", port 6379.
+  redisinsight:
+    image: redis/redisinsight:latest
+    profiles: ["ui"]
+    ports:
+      - "127.0.0.1:5540:5540"
+    volumes:
+      - redisinsight-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # (tuỳ chọn) OSRM cho tool "Khoảng cách & thời gian" và "Tối ưu tuyến đường".
+  # Mỗi tiến trình osrm-routed phục vụ một profile, nên tách car và foot.
+  # Host port mặc định 5001/5002 vì macOS dùng 5000 cho AirPlay Receiver.
+  osrm-car:
+    image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:latest}
+    profiles: ["routing"]
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/car/vietnam-latest.osrm"]
+    ports:
+      - "127.0.0.1:${OSRM_CAR_PORT:-5001}:5000"
+    volumes:
+      - ./data/osrm:/data:ro
+    restart: unless-stopped
+
+  osrm-foot:
+    image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:latest}
+    profiles: ["routing"]
+    command: ["osrm-routed", "--algorithm", "mld", "--max-table-size", "10000", "/data/foot/vietnam-latest.osrm"]
+    ports:
+      - "127.0.0.1:${OSRM_FOOT_PORT:-5002}:5000"
+    volumes:
+      - ./data/osrm:/data:ro
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  pg-data:
+  redisinsight-data:

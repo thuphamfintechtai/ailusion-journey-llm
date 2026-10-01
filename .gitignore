@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# OSRM map data (make osrm-prepare)
+data/
+.ruff_cache/
