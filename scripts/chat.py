@@ -12,12 +12,15 @@ import asyncio
 import sys
 import uuid
 
-from langchain_core.messages import HumanMessage
-
-from ailusion import close_redis, memory_backends, run_config, setup_observability
-from ailusion.graphs import build_chat_graph
-from ailusion.llm import MissingApiKeyError, message_text
-from ailusion.observability import shutdown_observability
+from ailusion import (
+    close_redis,
+    memory_backends,
+    run_config,
+    setup_observability,
+    shutdown_observability,
+)
+from ailusion.graphs import build_chat_graph, stream_reply
+from ailusion.llm import MissingApiKeyError
 
 
 async def ask(graph, thread_id: str, question: str) -> str:
@@ -26,12 +29,9 @@ async def ask(graph, thread_id: str, question: str) -> str:
     parts: list[str] = []
 
     print("\nAgent: ", end="", flush=True)
-    stream = graph.astream({"messages": [HumanMessage(question)]}, config, stream_mode="messages")
-    async for chunk, _metadata in stream:
-        text = message_text(getattr(chunk, "content", ""))
-        if text:
-            parts.append(text)
-            print(text, end="", flush=True)
+    async for text in stream_reply(graph, question, config):
+        parts.append(text)
+        print(text, end="", flush=True)
     print("\n")
     return "".join(parts)
 

@@ -10,19 +10,17 @@ không cần backend gửi lại toàn bộ hội thoại. Reducer `add_messages
 
 from __future__ import annotations
 
-from typing import Annotated, TypedDict
+from collections.abc import AsyncIterator
+from typing import Annotated, Any, TypedDict
 
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import AIMessageChunk, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from ailusion.llm import get_chat_model, message_text
+from ailusion.prompts.chat_system import CHAT_SYSTEM
 from ailusion.runtime import AgentLog
-
-SYSTEM_PROMPT = """Bạn là trợ lý lập kế hoạch du lịch Việt Nam của Ailusion Journey.
-Trả lời bằng tiếng Việt, ngắn gọn và cụ thể. Khi thiếu thông tin để lập kế hoạch
-(điểm đến, số ngày, số người, ngân sách), hãy hỏi lại đúng phần còn thiếu."""
 
 agent_log = AgentLog()
 
@@ -36,13 +34,13 @@ class ChatState(TypedDict):
 async def tra_loi(state: ChatState, config: RunnableConfig) -> dict:
     """Gọi LLM trên toàn bộ lịch sử hội thoại của thread."""
     thread_id = config["configurable"]["thread_id"]
-    await agent_log.publish(thread_id, node="tra_loi", kind="start", text="Đang soạn câu trả lời")
+    await agent_log.publish(thread_id, node="tra_loi", kind="step", text="Đang soạn câu trả lời")
 
     llm = get_chat_model()
-    reply = await llm.ainvoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]])
+    reply = await llm.ainvoke([SystemMessage(CHAT_SYSTEM), *state["messages"]])
 
     await agent_log.publish(
-        thread_id, node="tra_loi", kind="done", text=message_text(reply.content)[:200]
+        thread_id, node="tra_loi", kind="answer", text=message_text(reply.content)[:200]
     )
     return {"messages": [reply]}
 
@@ -53,3 +51,15 @@ def build_chat_graph() -> StateGraph:
     graph.add_edge(START, "tra_loi")
     graph.add_edge("tra_loi", END)
     return graph
+
+
+async def stream_reply(graph: Any, message: str, config: RunnableConfig) -> AsyncIterator[str]:
+    """Gửi một câu hỏi vào graph đã compile, trả về câu trả lời theo từng mẩu chữ."""
+    stream = graph.astream({"messages": [HumanMessage(message)]}, config, stream_mode="messages")
+    async for chunk, _metadata in stream:
+        if not isinstance(chunk, AIMessageChunk):
+            continue
+        # Gemini chen vào những chunk chỉ có chữ ký suy luận, không có chữ -> bỏ qua.
+        text = message_text(chunk.content)
+        if text:
+            yield text

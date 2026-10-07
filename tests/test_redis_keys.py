@@ -26,9 +26,7 @@ def test_tool_cache_key_differs_by_args_and_tool():
     assert keys.tool_cache("weather", {"city": "Huế"}) != keys.tool_cache(
         "weather", {"city": "Đà Lạt"}
     )
-    assert keys.tool_cache("weather", {"city": "Huế"}) != keys.tool_cache(
-        "events", {"city": "Huế"}
-    )
+    assert keys.tool_cache("weather", {"city": "Huế"}) != keys.tool_cache("events", {"city": "Huế"})
 
 
 def test_tool_cache_pattern_matches_its_keys():

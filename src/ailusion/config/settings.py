@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from typing import Literal
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from pydantic import Field, SecretStr
@@ -44,7 +46,7 @@ class LlmSettings(BaseSettings):
 
     gemini_api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
     openai_api_key: SecretStr | None = None
-    # Dạng "provider:model" cho init_chat_model, chỉ dùng trong smoke test --llm.
+    # Dạng "provider:model" cho init_chat_model; bỏ trống -> mặc định trong `ailusion.llm`.
     # Gemini -> "google_genai:<model>", OpenAI -> "openai:<model>".
     chat_model: str | None = Field(default=None, validation_alias="LLM_MODEL")
 
@@ -90,9 +92,7 @@ class RedisSettings(BaseSettings):
     model_config = _env("REDIS_")
 
     url: str = "redis://localhost:6379/0"
-    checkpoint_ttl_minutes: int = Field(
-        default=24 * 60, validation_alias="CHECKPOINT_TTL_MINUTES"
-    )
+    checkpoint_ttl_minutes: int = Field(default=24 * 60, validation_alias="CHECKPOINT_TTL_MINUTES")
     tool_cache_default_ttl_seconds: int = Field(
         default=15 * 60, validation_alias="TOOL_CACHE_DEFAULT_TTL_SECONDS"
     )
@@ -105,13 +105,27 @@ class RedisSettings(BaseSettings):
 
 
 class PostgresSettings(BaseSettings):
-    """Postgres 17 + pgvector — bộ nhớ dài hạn. DATABASE_URL, EMBEDDING_MODEL, EMBEDDING_DIMS."""
+    """Postgres 17 + pgvector — bộ nhớ dài hạn. EMBEDDING_MODEL, EMBEDDING_DIMS, và kết nối:
+
+    - DATABASE_URL nếu có (ưu tiên), hoặc
+    - PG_HOST, PG_PORT, PG_DATABASE, PG_USER, PG_PASSWORD (mật khẩu được mã hoá URL,
+      nên chứa "@", ":" ... vẫn đúng).
+    """
 
     model_config = _env()
 
-    url: str = Field(
-        default="postgresql://ailusion:ailusion@localhost:5432/ailusion",
-        validation_alias="DATABASE_URL",
+    # Tên trường trùng tên biến môi trường (có tiền tố pg_): đặt `user`/`host` trần thì
+    # populate_by_name sẽ đọc nhầm biến USER / HOST của shell.
+    database_url: str | None = None
+    pg_host: str = "localhost"
+    pg_port: int = 5432
+    pg_database: str = "ailusion"
+    pg_user: str = "ailusion"
+    pg_password: SecretStr = SecretStr("ailusion")
+    # TLS (libpq sslmode). "prefer" chạy được với server tắt SSL (Docker ở máy) và tự mã hoá
+    # khi server bật; DB đi qua internet thì đặt "require" (hoặc "verify-full" nếu có CA).
+    pg_sslmode: Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] = (
+        "prefer"
     )
     # "none" / "off" -> store không có vector index (chỉ tra theo namespace/key).
     embedding_model: str | None = Field(
@@ -120,21 +134,38 @@ class PostgresSettings(BaseSettings):
     embedding_dims: int = Field(default=1536, validation_alias="EMBEDDING_DIMS")
 
     @property
+    def url(self) -> str:
+        """Chuỗi kết nối cho psycopg / AsyncPostgresStore."""
+        if self.database_url:
+            # DATABASE_URL tự ghi sslmode thì giữ nguyên, không thì thêm PG_SSLMODE.
+            if "sslmode=" in self.database_url:
+                return self.database_url
+            sep = "&" if "?" in self.database_url else "?"
+            return f"{self.database_url}{sep}sslmode={self.pg_sslmode}"
+        user = quote(self.pg_user, safe="")
+        password = quote(self.pg_password.get_secret_value(), safe="")
+        return (
+            f"postgresql://{user}:{password}@{self.pg_host}:{self.pg_port}/{self.pg_database}"
+            f"?sslmode={self.pg_sslmode}"
+        )
+
+    @property
     def embedding_configured(self) -> bool:
         """Có chọn model embedding hay không (chưa xét đã có khoá API chưa)."""
         return bool(self.embedding_model) and self.embedding_model.lower() not in ("none", "off")
 
 
 class ToolSettings(BaseSettings):
-    """Tool bên ngoài theo sơ đồ: SERPAPI_API_KEY, WEATHER_*, OSRM_*."""
+    """Tool bên ngoài: MCP_URL (kho tool chính), SERPAPI_API_KEY, WEATHER_*, OSRM_*."""
 
     model_config = _env()
 
+    # MCP server "Ailusion Journey" — kho tool dùng chung cho mọi node (xem ailusion.tools).
+    mcp_url: str = Field(default="http://localhost:8002/mcp", validation_alias="MCP_URL")
+
     serpapi_api_key: SecretStr | None = Field(default=None, validation_alias="SERPAPI_API_KEY")
     weather_api_key: SecretStr | None = Field(default=None, validation_alias="WEATHER_API_KEY")
-    weather_api_base_url: str | None = Field(
-        default=None, validation_alias="WEATHER_API_BASE_URL"
-    )
+    weather_api_base_url: str | None = Field(default=None, validation_alias="WEATHER_API_BASE_URL")
     osrm_car_url: str = Field(default="http://localhost:5001", validation_alias="OSRM_CAR_URL")
     osrm_foot_url: str = Field(default="http://localhost:5002", validation_alias="OSRM_FOOT_URL")
 

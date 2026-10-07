@@ -124,7 +124,11 @@ async def check_postgres(s: Settings) -> list[Result]:
     results.append(await attempt("Long-term store (AsyncPostgresStore)", lambda: _store(s)))
     if not s.embeddings_enabled:
         results.append(
-            Result("Embedding", WARN, "chưa có OPENAI_API_KEY -> store chưa tìm kiếm ngữ nghĩa được")
+            Result(
+                "Embedding",
+                WARN,
+                f"{s.postgres.embedding_model} chưa bật / thiếu khoá -> store chưa tìm kiếm ngữ nghĩa được",
+            )
         )
     return results
 
@@ -272,9 +276,7 @@ async def _check_api_key(
 async def check_osrm(s: Settings, http: httpx.AsyncClient) -> list[Result]:
     """OSRM là tuỳ chọn: chưa chạy thì SKIP chứ không FAIL."""
     servers = (("OSRM car", s.tools.osrm_car_url), ("OSRM foot", s.tools.osrm_foot_url))
-    return [
-        await attempt(name, _osrm_probe(http, name, base_url)) for name, base_url in servers
-    ]
+    return [await attempt(name, _osrm_probe(http, name, base_url)) for name, base_url in servers]
 
 
 def _osrm_probe(

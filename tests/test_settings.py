@@ -31,9 +31,20 @@ ENV_TO_FIELD = [
     ("CHECKPOINT_TTL_MINUTES", "redis.checkpoint_ttl_minutes", "60", 60),
     ("TOOL_CACHE_DEFAULT_TTL_SECONDS", "redis.tool_cache_default_ttl_seconds", "30", 30),
     ("AGENT_LOG_MAXLEN", "redis.agent_log_maxlen", "77", 77),
-    ("DATABASE_URL", "postgres.url", "postgresql://a:b@h:5432/d", None),
+    (
+        "DATABASE_URL",
+        "postgres.url",
+        "postgresql://a:b@h:5432/d",
+        "postgresql://a:b@h:5432/d?sslmode=prefer",
+    ),
+    ("PG_HOST", "postgres.pg_host", "db.example", None),
+    ("PG_PORT", "postgres.pg_port", "6543", 6543),
+    ("PG_DATABASE", "postgres.pg_database", "other", None),
+    ("PG_USER", "postgres.pg_user", "postgres", None),
+    ("PG_PASSWORD", "postgres.pg_password", "pw", None),
     ("EMBEDDING_MODEL", "postgres.embedding_model", "openai:other", None),
     ("EMBEDDING_DIMS", "postgres.embedding_dims", "768", 768),
+    ("MCP_URL", "tools.mcp_url", "http://tools:9000/mcp", None),
     ("SERPAPI_API_KEY", "tools.serpapi_api_key", "serp-x", None),
     ("WEATHER_API_KEY", "tools.weather_api_key", "w-x", None),
     ("WEATHER_API_BASE_URL", "tools.weather_api_base_url", "https://w", None),
@@ -75,8 +86,25 @@ def test_defaults_without_any_env():
     assert s.app_env == "development"
     assert s.pii_masking is True
     assert s.redis.url == "redis://localhost:6379/0"
+    assert s.postgres.url == "postgresql://ailusion:ailusion@localhost:5432/ailusion?sslmode=prefer"
     assert s.langsmith.enabled is False
     assert s.langfuse.enabled is False
+
+
+def test_postgres_url_from_pg_vars(monkeypatch):
+    """Không có DATABASE_URL thì ghép từ PG_*; ký tự đặc biệt trong mật khẩu phải được mã hoá."""
+    monkeypatch.setenv("PG_HOST", "db.example")
+    monkeypatch.setenv("PG_PORT", "6543")
+    monkeypatch.setenv("PG_DATABASE", "d")
+    monkeypatch.setenv("PG_USER", "postgres")
+    monkeypatch.setenv("PG_PASSWORD", "p@ss:w/rd")
+    assert (
+        Settings().postgres.url
+        == "postgresql://postgres:p%40ss%3Aw%2Frd@db.example:6543/d?sslmode=prefer"
+    )
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://a:b@h:5432/x")
+    assert Settings().postgres.url == "postgresql://a:b@h:5432/x?sslmode=prefer"
 
 
 def test_empty_value_means_unset(monkeypatch):
@@ -129,3 +157,22 @@ def test_langfuse_needs_both_keys(monkeypatch):
 def test_checkpoint_ttl_seconds(monkeypatch):
     monkeypatch.setenv("CHECKPOINT_TTL_MINUTES", "90")
     assert Settings().redis.checkpoint_ttl_seconds == 90 * 60
+
+
+def test_postgres_sslmode(monkeypatch):
+    """PG_SSLMODE vào URL; DATABASE_URL đã tự ghi sslmode thì giữ nguyên."""
+    monkeypatch.setenv("PG_HOST", "db.example")
+    monkeypatch.setenv("PG_SSLMODE", "require")
+    assert Settings().postgres.url.endswith("@db.example:5432/ailusion?sslmode=require")
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://a:b@h/x?application_name=ai")
+    assert Settings().postgres.url == "postgresql://a:b@h/x?application_name=ai&sslmode=require"
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://a:b@h/x?sslmode=verify-full")
+    assert Settings().postgres.url == "postgresql://a:b@h/x?sslmode=verify-full"
+
+
+def test_postgres_sslmode_rejects_unknown(monkeypatch):
+    monkeypatch.setenv("PG_SSLMODE", "yes")
+    with pytest.raises(ValueError):
+        Settings()

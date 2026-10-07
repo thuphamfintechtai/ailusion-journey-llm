@@ -125,8 +125,10 @@ async with memory_backends() as (checkpointer, store):
 - **Bộ nhớ dài hạn**: namespace quy ước ở `Namespaces` (`memory/namespaces.py`) —
   `Namespaces.profile(user_id)`, `.habits(user_id)`, `.knowledge(region)`, `.calibration(tool)`.
   Cổng lọc ghi vào đây khi hết phiên.
-- **Nhật ký agent**: node gọi `await AgentLog().publish(thread_id, node=..., kind=..., text=...)`;
-  endpoint SSE dùng `AgentLog().tail(thread_id, last_id)` (hỗ trợ `Last-Event-ID` để nối lại).
+- **Nhật ký agent**: API bọc mỗi lượt chạy trong `async with AgentLog().turn(thread_id)` (ghi
+  `start`, rồi `done` hoặc `error`); node gọi `await AgentLog().publish(thread_id, node=..., kind=..., text=...)`;
+  endpoint SSE dùng `AgentLog().tail(thread_id, last_id)`: phát một lượt rồi đóng, không có
+  `Last-Event-ID` thì bắt đầu từ lượt gần nhất.
 - **Cache tool**: `@ToolCache().cached("price_availability")` trên hàm tool async; TTL từng tool ở
   `TOOL_TTL_SECONDS` (`runtime/tool_cache.py`).
 - **Cấu hình**: `get_settings()` trả về `Settings` đã gom nhóm — `settings.redis.url`,

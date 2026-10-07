@@ -36,6 +36,8 @@ from ailusion import (
     setup_observability,
     shutdown_observability,
 )
+from ailusion.llm import MissingApiKeyError, get_chat_model, message_text
+from ailusion.prompts.smoke import DESTINATION
 
 REQUEST = "Đi Đà Lạt 3 ngày, 2 người lớn 1 bé, ngân sách 15tr. Liên hệ 0901234567."
 FULL_BUDGET_VND = 15_000_000
@@ -60,9 +62,7 @@ def build_graph(*, use_llm: bool) -> StateGraph:
         """Graph A: rút slot từ yêu cầu, có tham khảo hồ sơ trong bộ nhớ dài hạn."""
         user_id = config["configurable"].get("user_id", "anon")
         profile = (
-            await runtime.store.aget(Namespaces.profile(user_id), "main")
-            if runtime.store
-            else None
+            await runtime.store.aget(Namespaces.profile(user_id), "main") if runtime.store else None
         )
 
         slots: dict[str, Any] = {"destination": "Đà Lạt", "days": 3, "adults": 2, "children": 1}
@@ -115,13 +115,8 @@ async def _log(config: RunnableConfig, *, node: str, kind: str, text: str, **dat
 
 
 async def _ask_llm_for_destination(request: str) -> str:
-    from langchain.chat_models import init_chat_model
-
-    llm = init_chat_model(get_settings().llm.chat_model)
-    message = await llm.ainvoke(
-        f"Trả lời đúng một từ: điểm đến trong yêu cầu sau là gì?\n{request}"
-    )
-    return str(message.content).strip()
+    message = await get_chat_model().ainvoke(DESTINATION.format(request=request))
+    return message_text(message.content).strip()
 
 
 async def run_full_plan(graph: Any, thread_id: str, user_id: str) -> dict:
@@ -171,10 +166,12 @@ def print_trace_links(thread_id: str, status: Any) -> None:
 
 
 async def main(*, use_llm: bool) -> int:
-    settings = get_settings()
-    if use_llm and not settings.llm.chat_model:
-        print("--llm cần LLM_MODEL trong .env (vd. google_genai:gemini-flash-latest)")
-        return 2
+    if use_llm:
+        try:
+            get_chat_model()  # báo thiếu khoá ngay, trước khi đụng tới Redis/Postgres
+        except MissingApiKeyError as e:
+            print(e)
+            return 2
 
     status = setup_observability()
     thread_id = f"smoke-{uuid.uuid4().hex[:8]}"

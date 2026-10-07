@@ -1,5 +1,6 @@
 """HTTP API — chỗ backend gọi vào service này.
 
+    POST /plan                    form -> lộ trình 3 phương án (pipeline ailusion.planning)
     POST /chat                    hỏi, chờ câu trả lời đầy đủ
     POST /chat/stream             hỏi, nhận câu trả lời theo từng mẩu (SSE)
     GET  /chat/{thread_id}        lịch sử hội thoại
@@ -16,7 +17,9 @@ chung cho mọi request — không mở lại kết nối Redis/Postgres theo t�
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -25,14 +28,21 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 
-from ailusion import close_redis, memory_backends, run_config, setup_observability
-from ailusion.graphs import build_chat_graph
+from ailusion import (
+    AgentLog,
+    close_redis,
+    memory_backends,
+    run_config,
+    setup_observability,
+    shutdown_observability,
+)
+from ailusion.graphs import build_chat_graph, stream_reply
 from ailusion.llm import MissingApiKeyError, message_text
-from ailusion.observability import shutdown_observability
-from ailusion.runtime import AgentLog
-from ailusion.runtime.agent_log import FROM_BEGINNING
+from ailusion.planning import PlanRequest, PlanResponse, build_plan_graph, to_response
+from ailusion.tools import load_mcp_tools
 
 from .schemas import ChatReply, ChatRequest, History, Message
 
@@ -46,6 +56,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_observability()
     async with memory_backends() as (checkpointer, store):
         app.state.graph = build_chat_graph().compile(checkpointer=checkpointer, store=store)
+        app.state.memory = (checkpointer, store)
+        app.state.plan_graph = None
+        app.state.plan_lock = asyncio.Lock()
         yield
     await close_redis()
     shutdown_observability()
@@ -72,15 +85,47 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/plan", response_model=PlanResponse)
+async def plan(request: PlanRequest, http_request: Request) -> PlanResponse:
+    """Người dùng điền form, nhận về lộ trình 3 phương án. Tiến độ: GET /chat/{thread_id}/events."""
+    thread_id = request.thread_id or f"plan-{uuid.uuid4().hex[:12]}"
+    graph = await _plan_graph(http_request.app)
+    config = run_config(
+        thread_id=thread_id, graph="plan", user_id=request.user_id, session_id=thread_id
+    )
+    started = time.monotonic()
+    async with agent_log.turn(thread_id):
+        state = await graph.ainvoke({"request": request.model_dump(mode="json")}, config)
+    return to_response(state, thread_id, time.monotonic() - started)
+
+
+async def _plan_graph(app: FastAPI):  # noqa: ANN202 - CompiledStateGraph
+    """Dựng pipeline lần đầu có request: cần nạp tool từ MCP server, server tắt thì báo 503."""
+    async with app.state.plan_lock:
+        if app.state.plan_graph is None:
+            try:
+                tools = await load_mcp_tools()
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=503, detail=f"Không kết nối được MCP server: {type(e).__name__}"
+                ) from e
+            checkpointer, store = app.state.memory
+            app.state.plan_graph = build_plan_graph(tools).compile(
+                checkpointer=checkpointer, store=store
+            )
+    return app.state.plan_graph
+
+
 @app.post("/chat", response_model=ChatReply)
 async def chat(request: ChatRequest, http_request: Request) -> ChatReply:
     """Hỏi một câu, nhận câu trả lời đầy đủ."""
     thread_id = request.thread_id or _new_thread_id()
     graph = http_request.app.state.graph
     try:
-        result = await graph.ainvoke(
-            {"messages": [HumanMessage(request.message)]}, _config(request, thread_id)
-        )
+        async with agent_log.turn(thread_id):
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(request.message)]}, _config(request, thread_id)
+            )
     except MissingApiKeyError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -96,17 +141,9 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> StreamingR
     async def events() -> AsyncIterator[str]:
         yield _sse({"type": "start", "thread_id": thread_id})
         try:
-            stream = graph.astream(
-                {"messages": [HumanMessage(request.message)]},
-                _config(request, thread_id),
-                stream_mode="messages",
-            )
-            async for chunk, _metadata in stream:
-                if not isinstance(chunk, AIMessageChunk):
-                    continue
-                # Gemini chen vào những chunk chỉ có chữ ký suy luận, không có chữ -> bỏ qua.
-                text = message_text(chunk.content)
-                if text:
+            async with agent_log.turn(thread_id):
+                config = _config(request, thread_id)
+                async for text in stream_reply(graph, request.message, config):
                     yield _sse({"type": "delta", "text": text})
         except MissingApiKeyError as e:
             yield _sse({"type": "error", "message": str(e)})
@@ -136,18 +173,20 @@ async def history(thread_id: str, http_request: Request) -> History:
 async def agent_events(
     thread_id: str, last_event_id: str | None = Header(default=None)
 ) -> StreamingResponse:
-    """Nhật ký agent dạng SSE. Trình duyệt tự gửi `Last-Event-ID` khi nối lại."""
+    """Nhật ký agent của một lượt, dạng SSE; đóng sau sự kiện done/error của lượt đó.
+
+    Không có `Last-Event-ID` thì phát từ đầu lượt gần nhất. Trình duyệt tự nối lại với
+    `Last-Event-ID` sau khi stream đóng, nên sẽ nhận tiếp lượt kế theo.
+    """
 
     async def events() -> AsyncIterator[str]:
-        async for event_id, event in agent_log.tail(
-            thread_id, last_id=last_event_id or FROM_BEGINNING
-        ):
+        async for event_id, event in agent_log.tail(thread_id, last_id=last_event_id):
             yield f"id: {event_id}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-def _config(request: ChatRequest, thread_id: str) -> Any:
+def _config(request: ChatRequest, thread_id: str) -> RunnableConfig:
     return run_config(
         thread_id=thread_id,
         graph=GRAPH_NAME,

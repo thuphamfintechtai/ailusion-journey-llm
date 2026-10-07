@@ -33,7 +33,8 @@ async def memory_backends(
     settings: Settings | None = None,
 ) -> AsyncIterator[tuple[AsyncRedisSaver, AsyncPostgresStore]]:
     """Mở cùng lúc checkpointer ngắn hạn và store dài hạn."""
-    async with short_term_checkpointer(settings) as checkpointer, long_term_store(
-        settings
-    ) as store:
+    async with (
+        short_term_checkpointer(settings) as checkpointer,
+        long_term_store(settings) as store,
+    ):
         yield checkpointer, store
