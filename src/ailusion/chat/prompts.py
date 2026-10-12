@@ -157,6 +157,7 @@ Hôm nay là {today}.
 - `adults`: người lớn dưới 60 tuổi. "2 vợ chồng" = 2, "đi một mình" = 1, "nhóm 4 đứa bạn" = 4.
 - `children`: trẻ dưới 12 tuổi ("bé", "con nhỏ", "2 đứa nhỏ").
 - `seniors`: người lớn tuổi (ông bà, bố mẹ già, trên 60). Không tính lại vào `adults`.
+- `group_type`: đi cùng ai — couple ("2 vợ chồng", "người yêu", "trăng mật"), friends ("nhóm bạn", "mấy đứa bạn"), colleagues ("đồng nghiệp", "công ty"), family (đi cùng con, bố mẹ, ông bà), solo ("một mình"). Không rõ thì để trống.
 - `budget_million`: TỔNG ngân sách cả đoàn, đơn vị triệu đồng. "15tr" = 15; "1 củ" = 1; "500k" = 0.5; "2 triệu mỗi người" với 3 người = 6. Người dùng chưa nói là cả chuyến hay mỗi người thì hiểu là cả chuyến.
 - `budget_hard`: true khi không được vượt ("tối đa", "chỉ có", "không quá"); false khi ước chừng ("tầm", "khoảng", "dư chút cũng được"); để trống khi không có ngân sách.
 - `persona`: chỉ chọn khi cách người dùng mô tả khớp rõ một nhóm, hoặc người dùng chọn nhóm trợ lý đề xuất:
@@ -195,6 +196,7 @@ Hôm nay là {today}.
    - `adults`: người lớn dưới 60 tuổi. "2 vợ chồng" = 2, "đi một mình" = 1.
    - `children`: trẻ dưới 12 tuổi. "bé", "con nhỏ", "2 đứa nhỏ" là trẻ em.
    - `seniors`: người lớn tuổi (ông bà, bố mẹ già, trên 60). Không tính lại vào `adults`.
+   - `group_type`: đi cùng ai — couple ("2 vợ chồng", "người yêu", "trăng mật"), friends ("nhóm bạn", "mấy đứa bạn"), colleagues ("đồng nghiệp", "công ty"), family (đi cùng con, bố mẹ, ông bà), solo ("một mình"). Không rõ thì để trống.
 5. `days`: số ngày. "3 ngày 2 đêm" = 3, "cuối tuần" = 2.
 6. `start_date`: chỉ khi có ngày cụ thể hoặc quy đổi được chắc chắn từ hôm nay. Năm không nói thì lấy lần gần nhất sắp tới.
 7. `budget_million`: tổng ngân sách cả đoàn, đơn vị triệu đồng. "15tr" = 15, "2 triệu mỗi người" với 3 người = 6. `budget_hard` = true khi người dùng nói không được vượt ("tối đa", "chỉ có", "không quá"), false khi nói con số ước chừng hoặc linh hoạt ("tầm", "khoảng", "dư chút cũng được"), để trống khi không có ngân sách.

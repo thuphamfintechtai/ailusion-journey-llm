@@ -22,29 +22,32 @@ NEARBY_KM = 10
 ENOUGH_PRICED_STAYS = 5  # dưới số này chỗ ở có giá trong DB mới gọi search_hotels
 
 
+def place_calls(
+    where: dict[str, Any], purposes: list[str], interests: str, needs: list[str]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Các lượt tìm chỗ chơi / quán (đọc DB) cho một vùng: `where` là {"destination": …} hoặc
+    {"lat", "lng", "radius_km"}. Gồm loại chung, từ khoá của mục đích, sở thích, nhu cầu."""
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("browse_places", {**where, "category": "Điểm thu hút khách du lịch", "limit": 30}),
+        ("browse_places", {**where, "category": "Nhà hàng", "limit": 30}),
+    ]
+    for purpose in purposes:
+        for word in PURPOSE_KEYWORDS[purpose]:
+            calls.append(("browse_places", {**where, "query": word, "limit": 15}))
+    for word in [w.strip() for w in interests.split(",") if w.strip()][:3]:
+        calls.append(("browse_places", {**where, "query": word, "limit": 15}))
+    if needs:
+        calls.append(("find_places_by_needs", {**where, "needs": needs, "limit": 30}))
+    return calls
+
+
 async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
     form, profile = form_of(state), profile_of(state)
     dest = form.destination
     start, end = form.start_date.isoformat(), form.end_date.isoformat()
-    calls: list[tuple[str, dict[str, Any]]] = [
-        (
-            "browse_places",
-            {"destination": dest, "category": "Điểm thu hút khách du lịch", "limit": 30},
-        ),
-        ("browse_places", {"destination": dest, "category": "Nhà hàng", "limit": 30}),
-    ]
-    for purpose in profile.purposes:
-        for word in PURPOSE_KEYWORDS[purpose]:
-            calls.append(("browse_places", {"destination": dest, "query": word, "limit": 15}))
-    for word in [w.strip() for w in form.interests.split(",") if w.strip()][:3]:
-        calls.append(("browse_places", {"destination": dest, "query": word, "limit": 15}))
-    if profile.required_needs:
-        calls.append(
-            (
-                "find_places_by_needs",
-                {"destination": dest, "needs": profile.required_needs, "limit": 30},
-            )
-        )
+    calls = place_calls(
+        {"destination": dest}, profile.purposes, form.interests, profile.required_needs
+    )
     calls += [
         (
             "find_festivals",
@@ -124,19 +127,17 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
             elif tool_ok(data):
                 festivals += [e["title"] for e in data.get("events") or [] if e.get("title")]
 
-    # Điểm đến chưa có dữ liệu đã lưu: quanh toạ độ (miễn phí), rồi search_places (tốn quota).
+    # Điểm đến không có dữ liệu riêng trong DB (VD "Hội An" nằm trong dữ liệu Đà Nẵng sau sáp
+    # nhập tỉnh): chạy lại ĐỦ các lượt tìm quanh toạ độ điểm đến (miễn phí), không chỉ 2 loại
+    # chung chung; vẫn thiếu thì mới search_places (tốn quota).
     center = state.get("center")
     visits = sum(p.kind == "visit" for p in places.values())
     if visits < ENOUGH_VISITS and center:
-        near = {"lat": center[0], "lng": center[1], "radius_km": NEARBY_KM, "limit": 30}
-        more, more_logs = await ctx.many(
-            [
-                ("browse_places", {"category": "Điểm thu hút khách du lịch", **near}),
-                ("browse_places", {"category": "Nhà hàng", **near}),
-            ]
-        )
-        for data in more:
-            add_places(places, data, "browse_places")
+        near = {"lat": center[0], "lng": center[1], "radius_km": NEARBY_KM}
+        nearby = place_calls(near, profile.purposes, form.interests, profile.required_needs)
+        more, more_logs = await ctx.many(nearby)
+        for (name, _args), data in zip(nearby, more, strict=True):
+            add_places(places, data, name)
         logs += more_logs
         visits = sum(p.kind == "visit" for p in places.values())
     if visits < ENOUGH_VISITS:

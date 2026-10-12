@@ -61,6 +61,10 @@ class TripInfo(BaseModel):
     adults: int | None = Field(None, description="Số người lớn dưới 60 tuổi")
     children: int | None = Field(None, description="Số trẻ dưới 12 tuổi")
     seniors: int | None = Field(None, description="Số người lớn tuổi")
+    # Đi cùng ai — chuyển sang ô group_type của form lập lộ trình, để pipeline không hỏi lại.
+    group_type: Literal["solo", "couple", "friends", "colleagues", "family"] | None = Field(
+        None, description="Đi cùng ai: một mình, cặp đôi, bạn bè, đồng nghiệp, gia đình"
+    )
     budget_million: float | None = Field(
         None, description="Tổng ngân sách cả đoàn, đơn vị triệu đồng"
     )

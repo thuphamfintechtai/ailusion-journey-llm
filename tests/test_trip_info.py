@@ -37,3 +37,12 @@ def test_transcript_labels_speakers_and_skips_blanks() -> None:
         [("human", "Đi Đà Lạt 3 ngày"), ("ai", "  "), ("system", "x"), ("ai", "Ok!")]
     )
     assert text == "Người dùng: Đi Đà Lạt 3 ngày\n\nTrợ lý: Ok!"
+
+
+def test_group_type_is_kept_across_turns() -> None:
+    from ailusion.chat.trip_info import merge
+
+    first = TripInfo(destination="Hội An", adults=2, group_type="couple")
+    later = TripInfo(budget_million=6)  # lượt sau không nhắc lại "2 vợ chồng"
+    merged = merge(first, later)
+    assert merged.group_type == "couple" and merged.budget_million == 6
