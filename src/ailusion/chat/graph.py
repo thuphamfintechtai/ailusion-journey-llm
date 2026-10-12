@@ -16,8 +16,9 @@ Reducer `add_messages` lo việc nối tin nhắn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Coroutine, Sequence
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import (
@@ -73,7 +74,12 @@ async def loc_tin(state: ChatState, config: RunnableConfig, runtime: Runtime) ->
     user_id = configurable.get("user_id")
     question, last_ai = _last_turn(state["messages"])
 
-    draft = await load_draft(runtime.store, thread_id, user_id, fallback=state.get("trip"))
+    # Form đang bàn nằm sẵn trong state của graph (Redis, nhanh). Chỉ khi state chưa có (lượt
+    # đầu, hoặc bộ nhớ đã hết hạn) mới đọc bản lưu trong Postgres — DB ở xa, mỗi lần ~0,5–2 s.
+    if state.get("trip"):
+        draft = TripDraft.model_validate(state["trip"])
+    else:
+        draft = await load_draft(runtime.store, thread_id, user_id)
 
     found = chat_filter.check(question, last_ai)
     if not found.should_extract:
@@ -104,8 +110,20 @@ async def loc_tin(state: ChatState, config: RunnableConfig, runtime: Runtime) ->
         update={"wants_plan": (draft.wants_plan or wants_plan) and bool(new.missing)}
     )
     if new != draft or open_form:
-        await save_draft(runtime.store, thread_id, new, user_id)
+        # Ghi bản lưu bền xuống Postgres chạy nền: state (trả về dưới đây) đã là bản mới nhất,
+        # người dùng không phải chờ DB ở xa trước khi thấy câu trả lời.
+        _in_background(save_draft(runtime.store, thread_id, new, user_id))
     return {"trip": new.model_dump(mode="json"), "open_form": open_form}
+
+
+_background: set[asyncio.Task[None]] = set()
+
+
+def _in_background(job: Coroutine[Any, Any, None]) -> None:
+    """Chạy `job` sau, giữ tham chiếu tới khi xong (không thì task có thể bị dọn giữa chừng)."""
+    task = asyncio.create_task(job)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 async def tra_loi(state: ChatState, config: RunnableConfig) -> dict:

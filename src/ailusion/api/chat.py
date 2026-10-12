@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from ailusion.chat.graph import stream_reply, trip_event, trip_payload
+from ailusion.chat.graph import REPLY_NODE, stream_reply, trip_event, trip_payload
 from ailusion.chat.trip_info import TripInfo, extract_trip_info
 from ailusion.chat.trip_store import TripDraft, load_draft, save_draft
 from ailusion.core.agent_log import AgentLog
@@ -107,17 +107,22 @@ async def history(thread_id: str, request: Request) -> History:
 
 @router.get("/chat/{thread_id}/trip", response_model=TripState)
 async def get_trip(thread_id: str, request: Request, user_id: str | None = None) -> TripState:
-    """Form chuyến đi đã lọc từ tin nhắn của hội thoại. Đọc Postgres, không gọi LLM."""
+    """Form chuyến đi đã lọc từ tin nhắn của hội thoại. Không gọi LLM.
+
+    Bản mới nhất nằm trong state của graph (Redis); state hết hạn thì đọc bản lưu trong Postgres.
+    """
     _, store = request.app.state.memory
-    fallback = None
+    current = None
     try:
         snapshot = await request.app.state.graph.aget_state(
             {"configurable": {"thread_id": thread_id}}
         )
-        fallback = (snapshot.values or {}).get("trip")
+        current = (snapshot.values or {}).get("trip")
     except Exception:  # noqa: BLE001 - Redis trục trặc: vẫn còn bản form trong Postgres
         logger.warning("Không đọc được state chat của %s, chỉ dùng form trong store", thread_id)
-    draft = await load_draft(store, thread_id, user_id, fallback=fallback)
+    if current:
+        return TripState.model_validate(trip_payload(TripDraft.model_validate(current)))
+    draft = await load_draft(store, thread_id, user_id)
     return TripState.model_validate(trip_payload(draft))
 
 
@@ -127,6 +132,12 @@ async def confirm_trip(thread_id: str, body: TripConfirm, request: Request) -> T
     _, store = request.app.state.memory
     draft = TripDraft(info=body.info.cleaned(), confirmed=True)
     await save_draft(store, thread_id, draft, body.user_id, replace_access=True)
+    # Lượt chat sau đọc form từ state của graph (không đọc lại Postgres): cập nhật cả ở đó.
+    await request.app.state.graph.aupdate_state(
+        {"configurable": {"thread_id": thread_id}},
+        {"trip": draft.model_dump(mode="json"), "open_form": False},
+        as_node=REPLY_NODE,
+    )
     return TripState.model_validate(trip_payload(draft))
 
 

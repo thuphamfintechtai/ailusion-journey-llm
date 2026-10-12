@@ -49,6 +49,9 @@ class LlmSettings(BaseSettings):
     # Dạng "provider:model" cho init_chat_model; bỏ trống -> mặc định trong `core/llm.py`.
     # Gemini -> "google_genai:<model>", OpenAI -> "openai:<model>".
     chat_model: str | None = Field(default=None, validation_alias="LLM_MODEL")
+    # Lượt lọc tin nhắn vào form chuyến đi (chạy TRƯỚC câu trả lời, người dùng phải chờ): trích
+    # vài trường có sẵn lựa chọn, model nhỏ đủ dùng — nhanh gấp đôi, rẻ hơn ~4 lần.
+    form_model: str = Field(default="openai:gpt-4.1-nano", validation_alias="LLM_FORM_MODEL")
 
 
 class LangSmithSettings(BaseSettings):

@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from ailusion.core.llm import get_chat_model
+from ailusion.core.settings import get_settings
 
 from .prompts import TRIP_INFO, TRIP_UPDATE
 
@@ -156,7 +157,9 @@ async def update_trip_info(
     Chỉ đưa form hiện tại + câu trả lời ngay trước của trợ lý + tin mới, không đọc lại cả
     cuộc trò chuyện — form đã lưu chính là phần tóm tắt các lượt trước.
     """
-    llm = get_chat_model(max_tokens=FORM_TOKENS, max_retries=1).with_structured_output(TripUpdate)
+    llm = get_chat_model(
+        get_settings().llm.form_model, max_tokens=FORM_TOKENS, max_retries=1
+    ).with_structured_output(TripUpdate)
     today = datetime.now(VN_TZ).date().isoformat()
     parts = [f"Form hiện tại (JSON):\n{current.model_dump_json(exclude_none=True)}"]
     if last_ai:

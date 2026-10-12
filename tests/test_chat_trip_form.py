@@ -5,6 +5,7 @@ LLM được thay bằng bản giả: không gọi mạng, không tốn quota.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -181,6 +182,8 @@ async def test_form_opens_on_agreement_then_reopens_when_complete(graph: Any) ->
     assert event["wants_plan"] is False
     assert "form đã đủ" in calls.prompts[-1]
 
+    # Bản lưu bền ghi xuống store chạy nền sau lượt chat: chờ xong rồi mới đọc.
+    await asyncio.gather(*chat_graph._background)
     saved = await store.aget(trip_namespace("t1"), "draft")
     assert saved is not None
     assert saved.value["info"]["budget_million"] == 8
