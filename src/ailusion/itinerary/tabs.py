@@ -21,13 +21,41 @@ from .shared.form import TripForm
 from .shared.math import km
 from .shared.models import CATEGORY_GROUPS
 
-# Số tạm (tu_dat): tiền xăng mỗi km khi tự đi, cả đoàn = giá × số xe.
-# (đồng/km thấp, đồng/km cao, số người mỗi xe, giá tối thiểu mỗi chặng mỗi xe). Taxi tính theo
-# `shared/fares.py`; bus: chưa có giá -> None.
-TRAVEL_COST: dict[str, tuple[int, int, int, int]] = {
-    "motorbike": (1_800, 2_600, 2, 0),  # xăng, 2 người 1 xe
-    "car": (2_500, 3_800, 7, 0),  # xăng xe tự lái, tối đa 7 người 1 xe
+# Số người mỗi xe khi tự lái: xe máy 2, ô tô tối đa 7. Gọi xe tính theo `shared/fares.py`;
+# bus: chưa có giá -> None.
+SEATS_PER_VEHICLE: dict[str, int] = {"motorbike": 2, "car": 7}
+# Tự lái (xe máy / ô tô) không tính tiền theo chặng mà theo ngày: thuê xe + đổ xăng mỗi xe.
+# Thuê xe máy (xe số / xe ga phổ thông, Đà Lạt): 100.000–150.000 đ/ngày (vietnamtourism.com,
+# mytour.vn 03/2026; lễ Tết +20–50%); xăng xe máy đổ khoảng 50.000 đ/xe/ngày. Ô tô tự lái và
+# xăng ô tô: số tạm (tu_dat). Đoàn đã có xe riêng thì bỏ phần thuê.
+RENTAL: dict[str, tuple[int, int]] = {
+    "motorbike": (100_000, 150_000),
+    "car": (800_000, 1_200_000),
 }
+FUEL_PER_DAY: dict[str, tuple[int, int]] = {
+    "motorbike": (40_000, 60_000),
+    "car": (300_000, 500_000),
+}
+RENTAL_NAMES = {"motorbike": "xe máy", "car": "ô tô tự lái"}
+
+
+def _vnd(v: int) -> str:
+    return f"{v:,}".replace(",", ".")
+
+
+def rental_of(mode: str | None, group_size: int) -> tuple[int, int, str] | None:
+    """(thấp, cao, ghi chú) tiền thuê xe + xăng một ngày cho cả đoàn; không tự lái thì None."""
+    if mode not in RENTAL:
+        return None
+    (r_low, r_high), (f_low, f_high) = RENTAL[mode], FUEL_PER_DAY[mode]  # type: ignore[index]
+    n = vehicles_of(mode, group_size)
+    note = (
+        f"{n} {RENTAL_NAMES[mode]} × (thuê {_vnd(r_low)}–{_vnd(r_high)} đ"  # type: ignore[index]
+        f" + xăng {_vnd(f_low)}–{_vnd(f_high)} đ)/ngày; có xe riêng thì chỉ tính xăng"
+    )
+    return (r_low + f_low) * n, (r_high + f_high) * n, note
+
+
 ROAD_FACTOR = 1.3  # km đường chim bay × hệ số đường vòng khi không có km thật (tu_dat)
 
 
@@ -48,9 +76,9 @@ def _thousand(v: float) -> int:
 
 def vehicles_of(mode: str | None, group_size: int) -> int:
     """Số xe tự đi (xe máy / ô tô) của đoàn; phương tiện khác -> 0."""
-    if mode not in TRAVEL_COST:
+    if mode not in SEATS_PER_VEHICLE:
         return 0
-    return math.ceil(group_size / TRAVEL_COST[mode][2])  # type: ignore[index]
+    return math.ceil(group_size / SEATS_PER_VEHICLE[mode])  # type: ignore[index]
 
 
 def leg_range(
@@ -59,18 +87,15 @@ def leg_range(
     group_size: int,
     minutes: float = 0,
     city: str = OTHER_CITY,
+    night: bool = False,
 ) -> tuple[int, int] | None:
     """(thấp, cao) tiền đi một chặng cho cả đoàn, làm tròn nghìn; không rõ phương tiện / km thì
-    None. Gọi xe: hãng rẻ nhất / đắt nhất cùng cỡ xe; tự đi: xăng theo `TRAVEL_COST`."""
+    None. Gọi xe: hãng rẻ nhất / đắt nhất cùng cỡ xe; tự lái tính theo ngày nên None."""
     if distance is None:
         return None
     if mode == "taxi":
-        return car_leg_range(distance, minutes, group_size, city)
-    if mode not in TRAVEL_COST:
-        return None
-    low, high, _, floor = TRAVEL_COST[mode]  # type: ignore[index]
-    n = vehicles_of(mode, group_size)
-    return _thousand(max(floor, low * distance) * n), _thousand(max(floor, high * distance) * n)
+        return car_leg_range(distance, minutes, group_size, city, night)
+    return None  # tự lái: tính theo ngày (`rental_of`), không theo chặng
 
 
 def leg_cost(
@@ -79,20 +104,18 @@ def leg_cost(
     group_size: int,
     minutes: float = 0,
     city: str = OTHER_CITY,
+    night: bool = False,
 ) -> int | None:
     """Tiền đi một chặng cho cả đoàn, làm tròn nghìn; không rõ phương tiện / km thì None.
 
     Gọi xe (taxi): trung bình giá các hãng trong `shared/fares.py` theo thành phố và cỡ xe;
-    tự đi: giữa khoảng xăng của `TRAVEL_COST`.
+    tự lái tính theo ngày (thuê + xăng, `rental_of`) nên None.
     """
     if distance is None:
         return None
     if mode == "taxi":
-        return car_leg_price(distance, minutes, group_size, city)
-    if mode not in TRAVEL_COST:
-        return None
-    low, high, _, floor = TRAVEL_COST[mode]  # type: ignore[index]
-    return _thousand(max(floor, (low + high) / 2 * distance) * vehicles_of(mode, group_size))
+        return car_leg_price(distance, minutes, group_size, city, night)
+    return None  # tự lái: tính theo ngày (`rental_of`), không theo chặng
 
 
 # Số tạm (tu_dat): tốc độ trung bình trong phố, km/h. Gọi taxi cộng thêm phút chờ xe tới đón.

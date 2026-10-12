@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, model_validator
 from .coordinator.profile import QUESTIONS
 from .coordinator.simulate import simulate
 from .shared.context import Ctx
-from .shared.fares import city_of, compare
+from .shared.fares import city_of, compare, is_night
 from .shared.form import (
     GROUP_NAMES,
     PURPOSE_NAMES,
@@ -64,6 +64,7 @@ from .tabs import (
     leg_range,
     packing,
     price_range,
+    rental_of,
     ride_alt,
     travel_alt,
 )
@@ -156,6 +157,10 @@ class DayCost(BaseModel):
     food: int = 0
     transport: int = 0
     extras: int = Field(0, description="Phát sinh, số giữa của `extra_items`")
+    rental: int = Field(0, description="Thuê xe tự lái trong ngày (số giữa)")
+    rental_min: int = 0
+    rental_max: int = 0
+    rental_note: str | None = None
     total: int = 0
     total_min: int = 0
     total_max: int = 0
@@ -211,6 +216,7 @@ class CostBreakdown(BaseModel):
     food: int = 0
     transport: int = 0
     extras: int = 0
+    rental: int = Field(0, description="Thuê xe tự lái cả chuyến (số giữa)")
     total: int = 0
     total_min: int = 0
     total_max: int = 0
@@ -507,7 +513,12 @@ def day_cost(
     transport = sum(i.travel_cost or 0 for i in items)
     low = add(("visit", "meal"), "price_min") + sum(i.travel_cost_min or 0 for i in items)
     high = add(("visit", "meal"), "price_max") + sum(i.travel_cost_max or 0 for i in items)
-    subtotal = night + tickets + food + transport
+    # Tự lái: cộng tiền thuê xe trong ngày (không có thì tiền xăng mỗi chặng trông rẻ ảo).
+    rent = rental_of(form.travel_mode, form.group_size) if form else None
+    r_low, r_high, r_note = rent if rent else (0, 0, None)
+    rental = int(round((r_low + r_high) / 2 / 1000) * 1000)
+    low, high = low + r_low, high + r_high
+    subtotal = night + tickets + food + transport + rental
     extra = [
         ExtraItem(**e) for e in (day_extras(items, form, subtotal, rainy, peak) if form else [])
     ]
@@ -519,6 +530,10 @@ def day_cost(
         food=food,
         transport=transport,
         extras=extras,
+        rental=rental,
+        rental_min=r_low,
+        rental_max=r_high,
+        rental_note=r_note,
         total=subtotal + extras,
         total_min=night + low + ex_low,
         total_max=night + high + ex_high,
@@ -562,7 +577,7 @@ def merge_extras(days: list[Day]) -> list[ExtraItem]:
 
 def _share(extra: int, costs: list[DayCost]) -> float:
     """Phát sinh chiếm bao nhiêu phần chi phí (ở + vé + ăn + đi lại) cả chuyến."""
-    base = sum(c.stay + c.tickets + c.food + c.transport for c in costs)
+    base = sum(c.stay + c.tickets + c.food + c.transport + c.rental for c in costs)
     return round(extra / base, 3) if base else 0
 
 
@@ -579,6 +594,7 @@ def cost_breakdown(
         food=sum(c.food for c in costs),
         transport=sum(c.transport for c in costs),
         extras=sum(c.extras for c in costs),
+        rental=sum(c.rental for c in costs),
         total=total,
         total_min=low,
         total_max=high,
@@ -602,7 +618,7 @@ def cost_breakdown(
             TransportOption.model_validate(r)
             for r in compare(
                 [
-                    (i.travel_km, i.travel_min)
+                    (i.travel_km, i.travel_min, is_night(to_minutes(i.start) - i.travel_min))
                     for d in days
                     for i in d.items
                     if i.travel_km is not None
@@ -633,15 +649,17 @@ def _day(
     km_matrix = state.get("km_matrix") or {}
     mode = form.travel_mode
 
-    def leg(a: str, b: str) -> dict[str, Any]:
+    def leg(a: str, b: str, arrive: float | None = None) -> dict[str, Any]:
         dist = leg_km(a, b, pos, km_matrix)
         minutes = (matrix or {}).get((a, b)) or 0
         city = city_of(form.destination)
-        span = leg_range(dist, mode, form.group_size, minutes, city)
+        # Đi đêm (Grab phụ thu): xét lúc khởi hành = lúc tới - phút đi.
+        night = is_night(arrive - minutes) if arrive is not None else False
+        span = leg_range(dist, mode, form.group_size, minutes, city, night)
         return {
             "travel_mode": mode,
             "travel_km": dist,
-            "travel_cost": leg_cost(dist, mode, form.group_size, minutes, city),
+            "travel_cost": leg_cost(dist, mode, form.group_size, minutes, city, night),
             "travel_cost_min": span[0] if span else None,
             "travel_cost_max": span[1] if span else None,
             "travel_alt": travel_alt(dist, mode, minutes),
@@ -680,7 +698,7 @@ def _day(
                 image=p.thumbnail,
                 summary=short_summary(p.summary),
                 why=why_of(p, plan.day, s, first=k == 0, daily_budget=daily_budget),
-                **leg(prev, p.place_id),
+                **leg(prev, p.place_id, s.start),
             )
         )
         prev = p.place_id
@@ -692,7 +710,7 @@ def _day(
             end=hhmm(run.back),
             name="Về chỗ ở",
             travel_min=int(last_travel),
-            **(leg(prev, STAY) if run.stops else {"travel_mode": mode}),
+            **(leg(prev, STAY, run.back) if run.stops else {"travel_mode": mode}),
         )
     )
     temp_min, temp_max, sessions = day_weather(state, plan.day, date.isoformat())

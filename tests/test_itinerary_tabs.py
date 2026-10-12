@@ -135,12 +135,12 @@ def test_leg_km_prefers_matrix_then_straight_line() -> None:
 def test_leg_cost_by_mode() -> None:
     # Gọi xe: trung bình các hãng cùng cỡ xe trong shared/fares.py.
     assert leg_cost(10, "taxi", 4) == 132_000
-    assert leg_cost(10, "taxi", 5) == 148_000  # 1 xe 7 chỗ
+    assert leg_cost(10, "taxi", 5) == 149_000  # 1 xe 7 chỗ (gồm phí nền tảng Grab)
     assert leg_cost(10, "taxi", 4, 20, "hn") == 131_000
     assert leg_cost(1, "taxi", 2) == 19_000  # chỉ giá mở cửa
     assert leg_cost(40, "taxi", 4) < 4 * leg_cost(10, "taxi", 4)  # qua mốc km thì rẻ hơn
-    assert leg_cost(10, "motorbike", 3) == 44_000  # 2 xe × 10 km × 2.200 (giữa 1.800–2.600)
-    assert leg_cost(10, "car", 4) == 32_000  # 10 km × 3.150 (giữa 2.500–3.800)
+    # Tự lái không tính theo chặng: tiền thuê + xăng tính theo ngày (`rental_of`).
+    assert leg_cost(10, "motorbike", 3) is None and leg_cost(10, "car", 4) is None
     assert leg_cost(10, "bus", 4) is None
     assert leg_cost(10, None, 4) is None
     assert leg_cost(None, "taxi", 4) is None
@@ -149,12 +149,11 @@ def test_leg_cost_by_mode() -> None:
 def test_leg_range_by_mode() -> None:
     # Gọi xe: hãng rẻ nhất / đắt nhất cùng cỡ xe; số giữa (trung bình các hãng) nằm trong khoảng.
     assert leg_range(10, "taxi", 4) == (96_000, 167_000)  # Sông Nhuệ 6.000 + 9 km × 10.000
-    assert leg_range(10, "taxi", 5) == (135_000, 155_000)  # 1 xe 7 chỗ
+    assert leg_range(10, "taxi", 5) == (137_000, 155_000)  # 1 xe 7 chỗ, Grab + 2.000 phí
     low, high = leg_range(10, "taxi", 9)  # type: ignore[misc]
-    assert (low, high) == (231_000, 322_000)  # 1 xe 7 chỗ + 1 xe 4 chỗ
+    assert (low, high) == (233_000, 322_000)  # 1 xe 7 chỗ + 1 xe 4 chỗ (Grab + 2.000 phí)
     assert low <= leg_cost(10, "taxi", 9) <= high  # type: ignore[operator]
-    assert leg_range(10, "motorbike", 3) == (36_000, 52_000)  # 2 xe × 1.800–2.600 đ/km
-    assert leg_range(10, "car", 8) == (50_000, 76_000)  # 2 ô tô × 2.500–3.800 đ/km
+    assert leg_range(10, "motorbike", 3) is None and leg_range(10, "car", 8) is None
     assert leg_range(10, "bus", 4) is None and leg_range(None, "taxi", 4) is None
 
 
@@ -254,15 +253,16 @@ def test_day_extras_is_a_share_of_the_day_with_reasons() -> None:
     (d1, d2), form = _trip("motorbike")
     ((label, (low, high, reason)),) = _extras(d1).items()
     assert label == "Chi phí phát sinh"
-    # 10–15% của ở + vé + ăn + đi lại: 1.000.000 + 300.000 + 90.000 + 80.000.
-    assert (low, high) == (147_000, round(1_470_000 * 0.15 / 1000) * 1000)
+    # 10–15% của ở + vé + ăn + đi lại + thuê và xăng 2 xe máy (giữa 175.000 × 2):
+    # 1.000.000 + 300.000 + 90.000 + 80.000 + 350.000.
+    assert (low, high) == (182_000, 273_000)
     assert reason.startswith("10–15% chi phí ngày: Thuế, phí dịch vụ")
     assert "hư xe" in reason and "Thung lũng Tình Yêu" in reason
     assert "Chùa Linh Phước" not in reason  # giá thật
 
     c = d1.cost
     assert c and c.extras == round((low + high) / 2 / 1000) * 1000
-    assert c.total == c.stay + c.tickets + c.food + c.transport + c.extras
+    assert c.total == c.stay + c.tickets + c.food + c.transport + c.rental + c.extras
     assert c.total_min <= c.total <= c.total_max
 
     cb = cost_breakdown([d1, d2], form, budget=None, estimated=True)
@@ -388,7 +388,7 @@ def test_fare_matrix() -> None:
     assert city_of("Hội An") == "hcm"  # nơi khác dùng giá phổ biến
     assert cars_for(4) == ["car4"] and cars_for(6) == ["car7"] and cars_for(9) == ["car7", "car4"]
 
-    rows = compare([(5, 15), (10, 25)], 2, "dn")
+    rows = compare([(5, 15, False), (10, 25, False)], 2, "dn")
     assert [r["total"] for r in rows] == sorted(r["total"] for r in rows)
     assert {r["kind"] for r in rows} == {"car", "bike"}
     bike = next(r for r in rows if r["service"] == "GrabBike")
@@ -428,3 +428,29 @@ def test_day_and_item_carry_travel_alt() -> None:
     day = _day(1, [item], 0, ride_alt=ride_alt([[{"mode": "car", "minutes": 5}]]))
     assert day.items[0].travel_alt[0].minutes == 5
     assert day.model_dump()["ride_alt"] == [{"mode": "car", "minutes": 5}]
+
+
+def test_grab_fees_and_night_surcharge() -> None:
+    from ailusion.itinerary.shared.fares import SERVICES, fare_of, is_night, service_price
+
+    grab = next(s for s in SERVICES if s.service == "GrabCar 4 chỗ")
+    base = service_price(grab, fare_of(grab, "hn"), 10, 20)
+    assert base == pytest.approx(114_089 + 2_000)  # phí nền tảng 2.000 đ/chuyến
+    assert service_price(grab, fare_of(grab, "hn"), 10, 20, night=True) == pytest.approx(
+        base + 10_000
+    )
+    assert is_night(22 * 60) and is_night(5 * 60 + 59) and not is_night(6 * 60)
+    assert leg_cost(10, "taxi", 4, night=True) > leg_cost(10, "taxi", 4)
+
+
+def test_rental_for_self_drive() -> None:
+    from ailusion.itinerary.tabs import rental_of
+
+    low, high, note = rental_of("motorbike", 3) or (0, 0, "")
+    # 2 xe máy × (thuê 100.000–150.000 + xăng 40.000–60.000) mỗi ngày
+    assert (low, high) == (280_000, 420_000)
+    assert note.startswith("2 xe máy × (thuê")
+    assert rental_of("taxi", 3) is None and rental_of(None, 3) is None
+    (d1, _), _ = _trip("motorbike")
+    assert d1.cost and (d1.cost.rental_min, d1.cost.rental_max) == (280_000, 420_000)
+    assert d1.cost.total_min <= d1.cost.total <= d1.cost.total_max

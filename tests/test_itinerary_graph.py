@@ -382,7 +382,7 @@ async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None
     for o in resp.options:
         cb = o.cost_breakdown
         assert cb.total == sum(d.cost.total for d in o.days)
-        assert cb.total == cb.stay + cb.tickets + cb.food + cb.transport + cb.extras
+        assert cb.total == cb.stay + cb.tickets + cb.food + cb.transport + cb.rental + cb.extras
         assert cb.total_min == sum(d.cost.total_min for d in o.days)
         assert cb.total_max == sum(d.cost.total_max for d in o.days)
         assert cb.total_min <= cb.total <= cb.total_max

@@ -6,7 +6,8 @@ Mỗi giá: (giá mở cửa, số km mở cửa đã gồm, [(tới km, đồng
 
 Nguồn (tra 12/10/2026):
 - Grab: grab.com/vn/blog/bang-thong-tin-cac-dich-vu-tren-ung-dung-grab (cập nhật 08/07/2026,
-  đã gồm VAT 8%).
+  đã gồm VAT 8%). Phí nền tảng GrabCar 2.000 đ/chuyến, phụ thu đêm 22:00–05:59 10.000 đ/chuyến
+  (GrabCar, GrabBike); hãng khác chưa công bố phụ thu cố định nên không cộng.
 - Xanh SM: greensm.com/vn-vi/news/gia-taxi-xanh-sm-bao-nhieu; Xanh SM Bike theo báo chí lúc ra mắt
   (chưa gồm phí ứng dụng 6,7%, đã cộng vào đây).
 - be: báo chí về đợt tăng giá beCar 05/2026; beBike Hà Nội.
@@ -29,6 +30,20 @@ class Service:
     kind: str  # "car4" | "car7" | "bike"
     seats: int  # khách mỗi xe
     by_city: dict[str, Fare]  # "hn" | "hcm" | "dn" | "*" (mọi nơi)
+    trip_fee: int = 0  # phí cố định mỗi chuyến (phí nền tảng)
+    night_fee: int = 0  # phụ thu chuyến đêm (`NIGHT_HOURS`)
+
+
+# Giờ tính phụ thu đêm của Grab: 22:00 – 05:59.
+NIGHT_HOURS = (22, 6)
+
+
+def is_night(minute: float | None) -> bool:
+    """`minute` = phút kể từ 0h của lúc đi."""
+    if minute is None:
+        return False
+    hour = int(minute // 60) % 24
+    return hour >= NIGHT_HOURS[0] or hour < NIGHT_HOURS[1]
 
 
 def _same(fare: Fare) -> dict[str, Fare]:
@@ -46,8 +61,18 @@ SERVICES: list[Service] = [
             "hcm": (28_473, 2, [(None, 9_818)], 442),
             "dn": (27_000, 2, [(None, 12_175)], 442),
         },
+        trip_fee=2_000,
+        night_fee=10_000,
     ),
-    Service("Grab", "GrabCar 7 chỗ", "car7", 7, _same((33_382, 2, [(None, 12_764)], 540))),
+    Service(
+        "Grab",
+        "GrabCar 7 chỗ",
+        "car7",
+        7,
+        _same((33_382, 2, [(None, 12_764)], 540)),
+        trip_fee=2_000,
+        night_fee=10_000,
+    ),
     Service(
         "Grab",
         "GrabBike",
@@ -57,6 +82,7 @@ SERVICES: list[Service] = [
             "hn": (13_255, 2, [(None, 4_222)], 344),
             "*": (12_273, 2, [(None, 4_222)], 344),
         },
+        night_fee=10_000,
     ),
     Service(
         "Xanh SM",
@@ -166,6 +192,13 @@ def ride_price(fare: Fare, km: float, minutes: float = 0) -> float:
     return price
 
 
+def service_price(
+    s: Service, fare: Fare, km: float, minutes: float = 0, night: bool = False
+) -> float:
+    """Cước một xe của hãng `s`: `ride_price` + phí cố định mỗi chuyến + phụ thu đêm."""
+    return ride_price(fare, km, minutes) + s.trip_fee + (s.night_fee if night else 0)
+
+
 def cars_for(group_size: int) -> list[str]:
     """Loại xe cần gọi cho đoàn: xe 7 chỗ cho đoàn đông, lẻ ≤ 4 người thì thêm xe 4 chỗ."""
     cars, left = [], max(group_size, 1)
@@ -180,27 +213,33 @@ def services(kind: str, city: str) -> list[tuple[Service, Fare]]:
     return [(s, f) for s in SERVICES if s.kind == kind and (f := fare_of(s, city)) is not None]
 
 
-def car_leg_price(km: float, minutes: float, group_size: int, city: str) -> int:
+def car_leg_price(
+    km: float, minutes: float, group_size: int, city: str, night: bool = False
+) -> int:
     """Ước tiền gọi ô tô một chặng cho cả đoàn: trung bình các hãng cùng cỡ xe, làm tròn nghìn."""
     total = 0.0
     for kind in cars_for(group_size):
-        prices = [ride_price(f, km, minutes) for _, f in services(kind, city)]
+        prices = [service_price(x, f, km, minutes, night) for x, f in services(kind, city)]
         total += sum(prices) / len(prices)
     return int(round(total / 1000) * 1000)
 
 
-def car_leg_range(km: float, minutes: float, group_size: int, city: str) -> tuple[int, int]:
+def car_leg_range(
+    km: float, minutes: float, group_size: int, city: str, night: bool = False
+) -> tuple[int, int]:
     """(rẻ nhất, đắt nhất) gọi ô tô một chặng cho cả đoàn: cộng theo từng xe của `cars_for`,
     mỗi xe lấy hãng rẻ nhất / đắt nhất cùng cỡ; làm tròn nghìn."""
     lo = hi = 0.0
     for kind in cars_for(group_size):
-        prices = [ride_price(f, km, minutes) for _, f in services(kind, city)]
+        prices = [service_price(x, f, km, minutes, night) for x, f in services(kind, city)]
         lo, hi = lo + min(prices), hi + max(prices)
     return int(round(lo / 1000) * 1000), int(round(hi / 1000) * 1000)
 
 
-def compare(legs: list[tuple[float, float]], group_size: int, city: str) -> list[dict[str, object]]:
-    """Tổng tiền đi các chặng (km, phút) của cả chuyến theo từng hãng, rẻ trước.
+def compare(
+    legs: list[tuple[float, float, bool]], group_size: int, city: str
+) -> list[dict[str, object]]:
+    """Tổng tiền đi các chặng (km, phút, đi đêm) của cả chuyến theo từng hãng, rẻ trước.
 
     Ô tô: theo số xe cần gọi (`cars_for`), hãng không có xe 7 chỗ thì gọi thêm xe 4 chỗ.
     Xe máy: mỗi khách một xe.
@@ -210,15 +249,17 @@ def compare(legs: list[tuple[float, float]], group_size: int, city: str) -> list
     for s, fare in services("car4", city) + services("bike", city):
         if s.kind == "bike":
             vehicles = group_size
-            per_leg = [ride_price(fare, km, mins) * vehicles for km, mins in legs]
+            per_leg = [service_price(s, fare, km, mins, nt) * vehicles for km, mins, nt in legs]
         else:
-            seven = next((f for x, f in services("car7", city) if x.brand == s.brand), None)
+            seven = next(((x, f) for x, f in services("car7", city) if x.brand == s.brand), None)
             if need7 and seven is not None:
-                fleet = [seven] * need7 + [fare] * (len(cars_for(group_size)) - need7)
+                fleet = [seven] * need7 + [(s, fare)] * (len(cars_for(group_size)) - need7)
             else:
-                fleet = [fare] * math.ceil(group_size / 4)
+                fleet = [(s, fare)] * math.ceil(group_size / 4)
             vehicles = len(fleet)
-            per_leg = [sum(ride_price(f, km, mins) for f in fleet) for km, mins in legs]
+            per_leg = [
+                sum(service_price(x, f, km, mins, nt) for x, f in fleet) for km, mins, nt in legs
+            ]
         rows.append(
             {
                 "brand": s.brand,
