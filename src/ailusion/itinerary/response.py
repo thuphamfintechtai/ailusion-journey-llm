@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, model_validator
 from .coordinator.profile import QUESTIONS
 from .coordinator.simulate import simulate
 from .shared.context import Ctx
-from .shared.fares import city_of, compare, is_night
+from .shared.fares import cars_for, city_of, compare, is_night
 from .shared.form import (
     GROUP_NAMES,
     PURPOSE_NAMES,
@@ -40,6 +40,8 @@ from .shared.llm import cost_usd
 from .shared.lunar import crowd_of, holiday_of, to_lunar
 from .shared.math import km
 from .shared.models import (
+    CATEGORY_GROUPS,
+    EVENING_WORDS,
     STAY,
     DayPlan,
     ItineraryState,
@@ -57,6 +59,7 @@ from .shared.models import (
 from .shared.tools import add_photos, nfc
 from .tabs import (
     RAIN_PCT,
+    SEATS_PER_VEHICLE,
     day_extras,
     day_weather,
     leg_cost,
@@ -67,6 +70,7 @@ from .tabs import (
     rental_of,
     ride_alt,
     travel_alt,
+    vehicles_of,
 )
 
 
@@ -118,8 +122,13 @@ class Item(BaseModel):
         default_factory=list,
         description="Phút đi chặng này bằng phương tiện khác (ước theo tốc độ phố, không có bus)",
     )
-    price_min: int | None = Field(None, description="Cả đoàn; giá ước thì -25%, chưa có giá: None")
-    price_max: int | None = Field(None, description="Cả đoàn; giá ước thì +25%, chưa có giá: None")
+    price_min: int | None = Field(None, description="Cả nhóm; giá ước thì -25%, chưa có giá: None")
+    price_max: int | None = Field(None, description="Cả nhóm; giá ước thì +25%, chưa có giá: None")
+    price_pp_min: int | None = Field(None, description="Mỗi người, thấp (khoảng giá Google / ước)")
+    price_pp_max: int | None = Field(None, description="Mỗi người, cao; None = không rõ mức trần")
+    price_note: str | None = Field(
+        None, description="Giải thích giá, VD khoảng giá mỗi người, hoặc chợ: không ước được"
+    )
 
     @model_validator(mode="after")
     def _ranges(self) -> Item:
@@ -316,6 +325,10 @@ class ItineraryResponse(BaseModel):
     destination: str
     start_date: str
     days: int
+    group_size: int = Field(1, description="Số người đi")
+    travel_party: str | None = Field(
+        None, description='VD "2 người · 1 xe máy (2 người/xe)"; không rõ phương tiện: None'
+    )
     questions: list[Question] = Field(default_factory=list)
     profile: Profile | None = None
     stay: Stay | None = None
@@ -382,6 +395,8 @@ def to_response(state: dict[str, Any], thread_id: str, seconds: float) -> Itiner
         "destination": form.destination,
         "start_date": form.start_date.isoformat(),
         "days": form.num_days,
+        "group_size": form.group_size,
+        "travel_party": travel_party(form.travel_mode, form.group_size),
         "profile": prof,
         "guesses": profile.guess,
         "understood": state.get("understood") or [],
@@ -688,6 +703,7 @@ def _day(
                 lng=p.lng,
                 price=p.price * form.group_size if p.price is not None else None,
                 price_by=p.price_by,
+                **price_detail(p, form.group_size),
                 travel_min=s.travel,
                 wait_min=s.wait,
                 rating=p.rating,
@@ -777,6 +793,65 @@ def purpose_reason(p: Place) -> str | None:
         quote = by.split(":", 1)[1].strip().strip('“”" ')
         return f"Hợp mục đích chuyến — khách từng viết “{_clip(quote, 80)}”"
     return f"Hợp mục đích chuyến ({by})" if by else "Hợp mục đích chuyến"
+
+
+# Chợ / phố đi bộ / mua sắm: vào cửa thường miễn phí, tiền mua quà, ăn vặt tuỳ người và vùng.
+SHOPPING_NOTE = "Vào cửa miễn phí; mua quà, ăn vặt tuỳ nhu cầu và giá từng vùng nên không ước tính"
+
+
+def price_detail(p: Place, group_size: int) -> dict[str, Any]:
+    """Giá mỗi người (thấp, cao) + giá cả nhóm theo khoảng đó + câu giải thích.
+
+    Có khoảng Google ghi thì dùng đúng khoảng ("Trên X" thì chỉ có mức thấp); giá ước ±25%;
+    chợ / phố đi bộ / chỗ mua sắm: không ước tiền mua sắm.
+    """
+    if p.kind == "visit" and (
+        any(w in p.text for w in CATEGORY_GROUPS["chợ"]) or EVENING_WORDS.search(p.text)
+    ):
+        return {"price_note": SHOPPING_NOTE}
+    if p.price is None:
+        return {}
+    by = p.price_by or ""
+    if p.price_low or p.price_high:
+        low, high = p.price_low or p.price, p.price_high
+        src = "theo Google"
+    elif by.startswith("ước"):
+        low, high = price_range(p.price, by)
+        src = by
+    else:
+        low = high = p.price
+        src = "giá vé" if p.kind == "visit" else "theo nguồn giá"
+
+    def vnd(v: int | None) -> str:
+        return f"{v or 0:,}".replace(",", ".")
+
+    if high is None:
+        text = f"Từ {vnd(low)} đ/người ({src})"
+    elif low == high:
+        text = f"{vnd(low)} đ/người ({src})"
+    else:
+        text = f"Khoảng {vnd(low)}–{vnd(high)} đ/người ({src})"
+    return {
+        "price_pp_min": low,
+        "price_pp_max": high,
+        "price_min": low * group_size if low is not None else None,
+        "price_max": (high or low) * group_size if (high or low) is not None else None,
+        "price_note": text if p.kind == "meal" or src != "giá vé" else None,
+    }
+
+
+def travel_party(mode: str | None, group_size: int) -> str | None:
+    """VD "2 người · 1 xe máy (2 người/xe)", "5 người · gọi 1 xe 7 chỗ"."""
+    people = f"{group_size} người"
+    if mode in SEATS_PER_VEHICLE:
+        n, seats = vehicles_of(mode, group_size), SEATS_PER_VEHICLE[mode]
+        name = "xe máy" if mode == "motorbike" else "ô tô tự lái"
+        return f"{people} · {n} {name} ({seats} người/xe)"
+    if mode == "taxi":
+        cars = cars_for(group_size)
+        kinds = [f"{cars.count(k)} xe {k[3:]} chỗ" for k in ("car7", "car4") if cars.count(k)]
+        return f"{people} · gọi " + " + ".join(kinds)
+    return people
 
 
 def why_of(

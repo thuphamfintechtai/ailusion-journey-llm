@@ -50,7 +50,7 @@ def rental_of(mode: str | None, group_size: int) -> tuple[int, int, str] | None:
     (r_low, r_high), (f_low, f_high) = RENTAL[mode], FUEL_PER_DAY[mode]  # type: ignore[index]
     n = vehicles_of(mode, group_size)
     note = (
-        f"{n} {RENTAL_NAMES[mode]} × (thuê {_vnd(r_low)}–{_vnd(r_high)} đ"  # type: ignore[index]
+        f"{group_size} người · {n} {RENTAL_NAMES[mode]} × (thuê {_vnd(r_low)}–{_vnd(r_high)} đ"  # type: ignore[index]
         f" + xăng {_vnd(f_low)}–{_vnd(f_high)} đ)/ngày; có xe riêng thì chỉ tính xăng"
     )
     return (r_low + f_low) * n, (r_high + f_high) * n, note

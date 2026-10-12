@@ -44,6 +44,9 @@ class Place:
     reviews: int = 0
     price: int | None = None  # mỗi người (chỗ chơi, quán) hoặc mỗi đêm (chỗ ở), VND
     price_by: str | None = None  # "tool" | "Agent Budget"
+    # Khoảng giá mỗi người Google ghi (VD "100–200 N ₫"); `price` là số giữa. Thiếu cao = "Trên …".
+    price_low: int | None = None
+    price_high: int | None = None
     summary: str = ""
     thumbnail: str | None = None  # link ảnh (tool tìm kiếm hoặc get_place_photos)
     need_status: dict[str, str] = field(default_factory=dict)  # mã nhu cầu -> yes / no / unknown

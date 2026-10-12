@@ -56,12 +56,17 @@ def tool_ok(result: Any) -> bool:
     return isinstance(result, dict) and result.get("status") == "success"
 
 
-def _price(raw: dict[str, Any]) -> int | None:
-    """Giá mỗi người: `price_vnd.vnd` (giữa khoảng giá Google ghi) của tool."""
+def _price(raw: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    """Giá mỗi người của tool: (giữa, thấp, cao) theo khoảng giá Google ghi (`price_vnd`)."""
     p = raw.get("price_vnd")
     if isinstance(p, dict) and p.get("kind") == "per_person" and p.get("vnd") is not None:
-        return int(p["vnd"])
-    return None
+        low, high = p.get("min_vnd"), p.get("max_vnd")
+        return (
+            int(p["vnd"]),
+            int(low) if low else None,
+            int(high) if high else None,
+        )
+    return None, None, None
 
 
 def add_places(pool: dict[str, Place], result: Any, source: str) -> None:
@@ -82,7 +87,7 @@ def add_places(pool: dict[str, Place], result: Any, source: str) -> None:
         kind = kind_of(category, nfc(raw.get("name")))
         if kind is None or kind == "stay":
             continue
-        price = _price(raw)
+        price, price_low, price_high = _price(raw)
         if pid in pool:
             place = pool[pid]
         else:
@@ -103,6 +108,7 @@ def add_places(pool: dict[str, Place], result: Any, source: str) -> None:
             place.thumbnail = str(raw["thumbnail"])
         if place.price is None and price is not None:
             place.price, place.price_by = price, "tool"
+            place.price_low, place.price_high = price_low, price_high
         for need, status in (raw.get("needs_status") or {}).items():
             if place.need_status.get(need, "unknown") == "unknown":
                 place.need_status[need] = status

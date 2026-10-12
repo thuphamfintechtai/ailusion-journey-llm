@@ -449,8 +449,38 @@ def test_rental_for_self_drive() -> None:
     low, high, note = rental_of("motorbike", 3) or (0, 0, "")
     # 2 xe máy × (thuê 100.000–150.000 + xăng 40.000–60.000) mỗi ngày
     assert (low, high) == (280_000, 420_000)
-    assert note.startswith("2 xe máy × (thuê")
+    assert note.startswith("3 người · 2 xe máy × (thuê")
     assert rental_of("taxi", 3) is None and rental_of(None, 3) is None
     (d1, _), _ = _trip("motorbike")
     assert d1.cost and (d1.cost.rental_min, d1.cost.rental_max) == (280_000, 420_000)
     assert d1.cost.total_min <= d1.cost.total <= d1.cost.total_max
+
+
+def test_price_detail_per_person_and_shopping_note() -> None:
+    from ailusion.itinerary.response import SHOPPING_NOTE, price_detail, travel_party
+    from ailusion.itinerary.shared.models import Place
+
+    def place(**kw: Any) -> Place:
+        base = {"place_id": "x", "name": "Quán", "category": "Nhà hàng", "kind": "meal"}
+        return Place(lat=11.9, lng=108.4, **{**base, **kw})
+
+    # Google ghi "100–200 N ₫" -> giữ đúng khoảng mỗi người, cả nhóm nhân số người.
+    d = price_detail(
+        place(price=150_000, price_by="tool", price_low=100_000, price_high=200_000), 2
+    )
+    assert (d["price_pp_min"], d["price_pp_max"]) == (100_000, 200_000)
+    assert (d["price_min"], d["price_max"]) == (200_000, 400_000)
+    assert d["price_note"] == "Khoảng 100.000–200.000 đ/người (theo Google)"
+    # "Trên 1 Tr" -> chỉ có mức thấp
+    d = price_detail(place(price=1_000_000, price_by="tool", price_low=1_000_000), 2)
+    assert d["price_pp_max"] is None and d["price_note"].startswith("Từ 1.000.000 đ/người")
+    # Giá ước ±25%
+    d = price_detail(place(price=150_000, price_by="ước theo loại"), 2)
+    assert d["price_pp_min"] < 150_000 < d["price_pp_max"]
+    # Chợ đêm: không ước tiền mua sắm
+    market = place(name="Chợ Đêm Đà Lạt", category="Chợ đêm", kind="visit", price=0)
+    assert price_detail(market, 2) == {"price_note": SHOPPING_NOTE}
+
+    assert travel_party("motorbike", 3) == "3 người · 2 xe máy (2 người/xe)"
+    assert travel_party("taxi", 9) == "9 người · gọi 1 xe 7 chỗ + 1 xe 4 chỗ"
+    assert travel_party(None, 2) == "2 người"
