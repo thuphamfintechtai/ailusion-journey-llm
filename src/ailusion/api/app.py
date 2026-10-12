@@ -3,6 +3,7 @@
     chat.py       POST /chat · POST /chat/stream · GET /chat/{id} · GET|PUT /chat/{id}/trip
                   POST /trip-info
     itinerary.py  POST /itinerary · POST /chat/{id}/plan
+    places.py     GET /places/{place_id} (chi tiết + review khi bấm thẻ địa điểm)
     app.py        GET /health · GET /chat/{id}/events (nhật ký agent, SSE)
 
 Chạy: `make api` (hoặc `uv run uvicorn ailusion.api:app --reload --port 8001`).
@@ -31,7 +32,7 @@ from ailusion.core.redis import close_redis
 from ailusion.core.settings import get_settings
 from ailusion.core.tracing import setup_observability, shutdown_observability
 
-from . import chat, itinerary
+from . import chat, itinerary, places
 
 agent_log = AgentLog()
 logger = logging.getLogger(__name__)
@@ -64,6 +65,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.memory = (checkpointer, store)
         app.state.itinerary_graph = None
         app.state.itinerary_lock = asyncio.Lock()
+        app.state.mcp_tools = None
+        app.state.mcp_lock = asyncio.Lock()
         yield
     await close_redis()
     shutdown_observability()
@@ -79,6 +82,7 @@ app = FastAPI(
 # Không bật CORS: chỉ backend gọi service này (từ server), trình duyệt không gọi thẳng.
 app.include_router(chat.router, dependencies=SERVICE_ONLY)
 app.include_router(itinerary.router, dependencies=SERVICE_ONLY)
+app.include_router(places.router, dependencies=SERVICE_ONLY)
 
 
 @app.get("/health")

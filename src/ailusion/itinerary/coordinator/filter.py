@@ -101,6 +101,7 @@ def merge_duplicates(places: dict[str, Place]) -> list[str]:
         )
         if twin:
             removed.append(f"{p.name} (trùng {twin.name})")
+            twin.thumbnail = twin.thumbnail or p.thumbnail
             del places[p.place_id]
         else:
             kept.append(p)

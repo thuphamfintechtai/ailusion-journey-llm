@@ -141,6 +141,18 @@ class AgentLog:
                 if event.get("node") == TURN_NODE and event.get("kind") in TERMINAL_KINDS:
                     return
 
+    async def latest_turn(self, thread_id: str) -> list[tuple[str, dict[str, Any]]]:
+        """Mọi sự kiện của lượt gần nhất (đã chạy xong), từ `start` tới `done`/`error`."""
+        last_id = await self._before_latest_turn(thread_id)
+        events: list[tuple[str, dict[str, Any]]] = []
+        while batch := await self.read(thread_id, last_id=last_id):
+            for event_id, event in batch:
+                last_id = event_id
+                events.append((event_id, event))
+                if event.get("node") == TURN_NODE and event.get("kind") in TERMINAL_KINDS:
+                    return events
+        return events
+
     async def _before_latest_turn(self, thread_id: str, page: int = 100) -> str:
         """Id ngay trước sự kiện `start` mới nhất (XREAD chỉ trả sự kiện *sau* id truyền vào)."""
         key = agent_log_key(thread_id)

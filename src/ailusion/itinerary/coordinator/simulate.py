@@ -1,5 +1,7 @@
 """Làn Coordinator — bước 10–11: chạy thử từng lịch Planner xếp, theo đồng hồ.
 
+- `reorder_visits`: sắp lại thứ tự chỗ chơi Planner xếp cho ít phút ngồi xe nhất (chỗ ở -> các
+  chỗ -> chỗ ở); chỉ nhận khi chạy thử không thêm lỗi (giờ mở cửa, giờ ăn…).
 - `simulate`: chạy dòng thời gian một ngày (giờ đi, giờ đến, chờ mở cửa, giờ về).
 - `check_plan`: chạy 2 lần (ở ít / ở lâu) -> ok / risky / warn / fail; lỗi cứng, sát giờ, vượt tiền
   xử lý theo nhóm khách. Trả lý do để Planner sửa.
@@ -9,7 +11,9 @@
 
 from __future__ import annotations
 
+import heapq
 import math
+from itertools import permutations
 
 from ..agents.planner import (
     PlannerOutput,
@@ -34,13 +38,113 @@ from ..shared.models import (
     dump_plans,
     form_of,
     matrix_of,
+    opens_late,
     places_of,
     plans_of,
     profile_of,
+    same_brand,
 )
 
 MEAL_WAIT_MAX = 45  # tới quán sớm hơn giờ ăn tối đa ngần này phút thì chờ (số tạm, "tu_dat")
+# Chờ mở cửa / chờ hết giờ nghỉ lâu hơn ngần này phút là lỗi (VD tới chợ đêm 13:48, chờ 270 phút).
+LONG_WAIT_MAX = 45
 MAX_ORDERINGS = 400  # trần số cách chèn quán được thử cho 1 lịch
+EXACT_VISITS = 7  # tới ngần này chỗ chơi thì thử mọi thứ tự; nhiều hơn: láng giềng gần + 2-opt
+REORDER_TRIES = 4  # số thứ tự ngắn nhất đem chạy thử, lần lượt tới khi có cái không thêm lỗi
+
+
+def ride_of(order: list[str], matrix: dict[tuple[str, str], float]) -> float:
+    """Phút ngồi xe chỗ ở -> các chỗ theo thứ tự -> chỗ ở (thiếu cặp tính 0 như `simulate`)."""
+    path = [STAY, *order, STAY]
+    return sum(matrix.get((a, b), 0) for a, b in zip(path, path[1:], strict=False))
+
+
+def _two_opt(visits: list[str], matrix: dict[tuple[str, str], float]) -> list[str]:
+    """Láng giềng gần nhất từ chỗ ở, rồi đảo đoạn (2-opt) tới khi không ngắn hơn được nữa."""
+    order, left, prev = [], list(visits), STAY
+    while left:
+        prev = min(left, key=lambda v: matrix.get((prev, v), 0))
+        order.append(prev)
+        left.remove(prev)
+    best = ride_of(order, matrix)
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(order) - 1):
+            for j in range(i + 1, len(order)):
+                trial = order[:i] + order[i : j + 1][::-1] + order[j + 1 :]
+                if (r := ride_of(trial, matrix)) < best - 1e-9:
+                    order, best, improved = trial, r, True
+    return order
+
+
+def shorter_orders(
+    visits: list[str], matrix: dict[tuple[str, str], float], tail: list[str] | None = None
+) -> list[list[str]]:
+    """Các thứ tự chỗ chơi ngồi xe ít hơn thứ tự đang có, ít nhất trước (tối đa REORDER_TRIES).
+    `tail`: chỗ buổi tối luôn đi cuối (giữ thứ tự), thứ tự trả về đã gồm chúng."""
+    tail = tail or []
+    now = ride_of(visits + tail, matrix)
+    if len(visits) <= EXACT_VISITS:
+        orders = heapq.nsmallest(
+            REORDER_TRIES,
+            (list(o) + tail for o in permutations(visits)),
+            key=lambda o: ride_of(o, matrix),
+        )
+    else:
+        orders = [_two_opt(visits + tail, matrix)]
+        orders = [[v for v in orders[0] if v not in tail] + tail]
+    return [o for o in orders if ride_of(o, matrix) < now - 1e-9]
+
+
+def evening_last(visits: list[str], places: dict[str, Place], day: int) -> list[str]:
+    """Dời chỗ chỉ đi buổi tối (chợ đêm, phố đi bộ, bar, mở cửa từ 16:00) xuống cuối ngày, mở sớm
+    trước; các chỗ khác giữ thứ tự."""
+    late = [v for v in visits if opens_late(places[v], day)]
+    late.sort(key=lambda v: (places[v].hours.get(day) or (0, 0))[0])
+    return [v for v in visits if v not in late] + late
+
+
+def reorder_visits(
+    plan: DayPlan,
+    places: dict[str, Place],
+    matrix: dict[tuple[str, str], float],
+    window: DayWindow,
+    spare_meals: list[str],
+    required_needs: list[str],
+) -> bool:
+    """Sắp lại thứ tự chỗ chơi cho ít ngồi xe, để một ngày không chạy qua lại giữa hai đầu thành
+    phố; chỗ buổi tối (chợ đêm, bar…) luôn xếp cuối để không tới trước giờ mở rồi chờ hàng giờ.
+    Mỗi thứ tự mới được đặt lại quán ăn (`place_meals`) rồi chạy thử: nhận thứ tự ít lỗi hơn (ở
+    ít, rồi ở lâu: giờ mở cửa, chờ lâu, giờ ăn, giờ về), cùng số lỗi thì phải ngồi xe ít hơn. Đổi
+    `plan.stops` tại chỗ; trả True nếu có đổi."""
+    visits = [s for s in plan.stops if places[s].kind != "meal"]
+    meals = [s for s in plan.stops if places[s].kind == "meal"]
+    if len(visits) < 2:
+        return False
+
+    def tried(stops: list[str]) -> tuple[DayPlan, tuple[int, int], float]:
+        trial = DayPlan(id=plan.id, day=plan.day, leave_stay=plan.leave_stay, stops=list(stops))
+        place_meals(trial, places, matrix, window, spare_meals)
+        short = simulate(trial, places, matrix, window, required_needs, long_stay=False)
+        long = simulate(trial, places, matrix, window, required_needs, long_stay=True)
+        return trial, (len(short.issues), len(long.issues)), _ride_min(trial, short)
+
+    _, now_issues, now_ride = tried(plan.stops)
+    late = [v for v in evening_last(visits, places, plan.day) if opens_late(places[v], plan.day)]
+    early = [v for v in visits if v not in late]
+    orders = shorter_orders(early, matrix, late)
+    if late and early + late != visits:
+        orders.append(early + late)  # thứ tự Planner, chỉ dời chỗ buổi tối xuống cuối
+    best = None
+    for order in orders:
+        trial, issues, ride = tried(order + meals)
+        if (issues, ride) < (now_issues, now_ride) and (best is None or (issues, ride) < best[1]):
+            best = (trial, (issues, ride))
+    if best is None:
+        return False
+    plan.stops = best[0].stops
+    return True
 
 
 def place_meals(
@@ -56,9 +160,25 @@ def place_meals(
     Đổi `plan.stops` tại chỗ; trả True nếu có đổi."""
     visits = [s for s in plan.stops if places[s].kind != "meal"]
     meals = [s for s in plan.stops if places[s].kind == "meal"]
-    spares = [m for m in spare_meals if m not in plan.stops][:3]
+    spares = [
+        m
+        for m in spare_meals
+        if m not in plan.stops and not any(same_brand(places[m], places[k]) for k in meals)
+    ][:3]
     meal_sets = [meals] + [meals[:i] + meals[i + 1 :] for i in range(len(meals))]
-    meal_sets += [meals + [m] for m in spares] if len(meals) < 2 else []
+
+    def one_brand_twice(chosen: list[str]) -> bool:
+        return any(
+            same_brand(places[a], places[b]) for i, a in enumerate(chosen) for b in chosen[i + 1 :]
+        )
+
+    # Không ăn 2 bữa cùng chuỗi quán trong một ngày (Planner chọn vậy thì bỏ 1 quán, bù quán khác).
+    twice = one_brand_twice(meals)
+    meal_sets = [c for c in meal_sets if not one_brand_twice(c)] or meal_sets
+    if len(meals) < 2:
+        meal_sets += [meals + [m] for m in spares]
+    elif twice:
+        meal_sets += [c + [m] for c in meal_sets if len(c) == 1 for m in spares]
     candidates: list[list[str]] = []
     for chosen in meal_sets:
         for order in _insertions(visits, chosen):
@@ -67,18 +187,21 @@ def place_meals(
                 break
 
     def score(stops: list[str]) -> tuple[int, ...]:
-        """Ít lỗi giờ ăn -> ít lỗi khác -> ít bỏ quán Planner chọn -> ít thêm quán -> ít lỗi giờ
-        ăn khi ở lâu -> về sớm. Bỏ quán là cách cuối cùng, không phải để về sớm hơn."""
+        """Ít lỗi giờ ăn -> ít lỗi khác -> ít bỏ quán Planner chọn -> ít thêm quán -> ít bữa cùng
+        loại món -> ít lỗi giờ ăn khi ở lâu -> về sớm. Bỏ quán là cách cuối cùng, không phải để về
+        sớm hơn."""
         trial = DayPlan(id=plan.id, day=plan.day, leave_stay=plan.leave_stay, stops=stops)
         run = simulate(trial, places, matrix, window, [], long_stay=False)
         long = simulate(trial, places, matrix, window, [], long_stay=True)
         dropped = sum(m not in stops for m in meals)
         added = sum(m not in meals for m in stops if places[m].kind == "meal")
+        kinds = [places[m].group for m in stops if places[m].kind == "meal"]
         return (
             sum(map(is_meal_issue, run.issues)),
             len(run.issues),
             dropped,
             added,
+            len(kinds) - len(set(kinds)),
             sum(map(is_meal_issue, long.issues)),
             run.back,
         )
@@ -145,14 +268,20 @@ def simulate(
         else:
             open_, close = span  # type: ignore[misc]
         start = max(arrive, open_)
+        meal_wait = 0  # chờ tới giờ ăn (có chủ ý, ≤ MEAL_WAIT_MAX) không tính là chờ mở cửa
         if p.kind == "meal":  # tới quán sớm một chút trước giờ ăn thì chờ tới giờ ăn
             for a, _b in (LUNCH, DINNER):
                 if 0 < to_minutes(a) - start <= MEAL_WAIT_MAX:
-                    start = to_minutes(a)
+                    meal_wait, start = to_minutes(a) - start, to_minutes(a)
         breaks = sorted(p.breaks.get(plan.day, []))
         for a, b in breaks:  # tới đúng giờ nghỉ giữa ngày thì chờ mở lại
             if a <= start < b:
                 start = b
+        if start - arrive - meal_wait > LONG_WAIT_MAX:
+            issues.append(
+                f"tới {p.name} lúc {hhmm(arrive)}, phải chờ {start - arrive} phút tới "
+                f"{hhmm(start)} mới vào được"
+            )
         stay = p.stay_high if long_stay else p.stay_low
         if stay is None:
             unchecked.append(f"chưa có thời gian ở lại của {p.name}")
@@ -319,8 +448,19 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
     windows = {d.day: d for d in profile.days}
     plans = plans_of(state)
     await ctx.log("kiem_lich", "step", f"Chạy thử {len(plans)} lịch theo đồng hồ, 2 lần")
-    # Quán ăn: code tự đặt vào khung trưa / tối (Planner hay xếp lệch giờ ăn).
     spare = meals_by_day(state, places)
+    # Thứ tự chỗ chơi: code sắp lại cho ít ngồi xe (Planner hay xếp chạy qua lại), trước khi đặt
+    # quán ăn để bữa ăn rơi đúng chỗ trên thứ tự mới.
+    needs = profile.required_needs
+    shorter = sum(
+        reorder_visits(p, places, matrix, windows[p.day], spare[p.day], needs)
+        for p in plans.values()
+    )
+    if shorter:
+        await ctx.log(
+            "kiem_lich", "finding", f"Sắp lại thứ tự cho đỡ chạy qua lại ở {shorter} lịch"
+        )
+    # Quán ăn: code tự đặt vào khung trưa / tối (Planner hay xếp lệch giờ ăn).
     moved = sum(
         place_meals(p, places, matrix, windows[p.day], spare[p.day]) for p in plans.values()
     )
@@ -363,6 +503,7 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
                     stops=stops,
                     fixed=True,
                 )
+                reorder_visits(new, places, matrix, windows[d.day], spare[d.day], needs)
                 place_meals(new, places, matrix, windows[d.day], spare[d.day])
                 check_plan(new, places, matrix, windows[d.day], profile, form)  # sau sửa: gắn nhãn
                 own = errors_of(p.id, rule_errors.get(d.day, []))

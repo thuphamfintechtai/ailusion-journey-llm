@@ -7,6 +7,7 @@ State của LangGraph chỉ chứa dict/list thuần để checkpointer lưu đ�
 from __future__ import annotations
 
 import operator
+import re
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Annotated, Any, TypedDict
@@ -44,6 +45,7 @@ class Place:
     price: int | None = None  # mỗi người (chỗ chơi, quán) hoặc mỗi đêm (chỗ ở), VND
     price_by: str | None = None  # "tool" | "Agent Budget"
     summary: str = ""
+    thumbnail: str | None = None  # link ảnh (tool tìm kiếm hoặc get_place_photos)
     need_status: dict[str, str] = field(default_factory=dict)  # mã nhu cầu -> yes / no / unknown
     hours: dict[int, tuple[int, int] | None] = field(default_factory=dict)  # ngày (1..) -> mở, đóng
     # ngày -> các khung đóng cửa giữa giờ mở và giờ đóng (VD nghỉ trưa 11:00–13:00), phút
@@ -72,6 +74,53 @@ class Place:
     @property
     def rating_floor(self) -> float | None:
         return rating_floor(self.rating, self.reviews)
+
+
+# Tên quán: phần sau các dấu này là địa chỉ / chi nhánh, không phải thương hiệu
+# ("Lẩu Gà Lá É TAO NGỘ - 70A 3 tháng 2", "… 39 Đường 3/2", "… (Quán Nhi)").
+BRANCH_CUT = re.compile(r"\s[-–|,/]\s|\(|\b(?:đường|chi nhánh|cn|cơ sở|branch|ngõ|hẻm|kiệt|tại)\b")
+# Chữ chung của tên quán, bỏ khi so thương hiệu (so trên chữ đã bỏ dấu).
+GENERIC_MEAL_WORDS = {"quan", "nha", "hang", "restaurant", "tiem", "the"}
+SAME_BRAND_MIN_WORDS = 3  # tên ngắn hơn mà là đầu tên kia thì chưa đủ chắc là cùng chuỗi
+
+
+def _plain(text: str) -> str:
+    """Thường hoá, bỏ dấu (đ -> d) để so tên."""
+    text = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
+def brand_key(name: str) -> tuple[str, ...]:
+    """Các chữ thương hiệu của tên quán: bỏ địa chỉ / chi nhánh phía sau, bỏ dấu, bỏ chữ chung."""
+    name = unicodedata.normalize("NFC", name).lower()
+    head = BRANCH_CUT.split(name, maxsplit=1)[0]
+    words = re.findall(r"\w+", head)
+    # Cắt ở số nhà đầu tiên ("… 39 …"), trừ khi số là một phần tên ngắn ("Phở 24").
+    cut = next((i for i, w in enumerate(words) if any(c.isdigit() for c in w)), None)
+    if cut is not None and cut >= 2:
+        words = words[:cut]
+    plain = [_plain(w) for w in words]
+    return tuple(w for w in plain if w not in GENERIC_MEAL_WORDS) or tuple(plain)
+
+
+def same_brand(a: Place, b: Place) -> bool:
+    """2 quán cùng thương hiệu / chuỗi (khác chi nhánh): chữ thương hiệu trùng, hoặc tên này là
+    đầu tên kia và đủ dài (≥ SAME_BRAND_MIN_WORDS chữ)."""
+    ka, kb = brand_key(a.name), brand_key(b.name)
+    if not ka or not kb:
+        return False
+    short, long_ = sorted((ka, kb), key=len)
+    return ka == kb or (len(short) >= SAME_BRAND_MIN_WORDS and long_[: len(short)] == short)
+
+
+# Chỗ chỉ đáng đi buổi tối (chợ đêm, phố đi bộ, bar…) hoặc mở cửa từ ngần này trở đi: xếp cuối ngày.
+EVENING_OPEN = 16 * 60
+EVENING_WORDS = re.compile(r"chợ đêm|phố đi bộ|night market|walking street|\bbar\b|\bpub\b")
+
+
+def opens_late(p: Place, day: int) -> bool:
+    span = p.hours.get(day)
+    return bool(span and span[0] >= EVENING_OPEN) or bool(EVENING_WORDS.search(p.text))
 
 
 @dataclass
@@ -148,6 +197,7 @@ class ItineraryState(TypedDict, total=False):
     stays: dict[str, dict[str, Any]]
     weather: list[dict[str, Any]]
     festivals: list[str]
+    festival_dates: list[dict[str, Any]]  # {"name", "start", "end"} của lễ hội có ngày
     alerts: list[str]
     notes: list[str]
     to_experience: list[str]
@@ -157,6 +207,7 @@ class ItineraryState(TypedDict, total=False):
     codes: dict[str, str]  # mã ngắn -> place_id
     day_codes: dict[str, list[str]]  # ngày -> mã chỗ Planner được dùng ngày đó (bước 8)
     matrix: dict[str, float]  # "from|to" -> phút
+    km_matrix: dict[str, float]  # "from|to" -> km đường đi (cùng lượt distance_matrix)
     plans: dict[str, dict[str, Any]]  # plan_id -> DayPlan dạng dict
     ranked: dict[str, list[str]]  # ngày -> plan_id theo hạng
     reasons: dict[str, list[str]]

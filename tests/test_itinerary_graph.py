@@ -33,6 +33,7 @@ def _p(
         "lat": C[0] + dlat,
         "lng": C[1] + dlng,
         "summary": kw.get("summary", ""),
+        "thumbnail": kw.get("thumbnail"),
     }
     if price is not None:
         out["price_vnd"] = {"kind": "per_person", "vnd": price}
@@ -41,7 +42,9 @@ def _p(
 
 FAR = _p("far", "VinWonders Nha Trang", "Công viên giải trí", -3.8, 1.0, 900000)  # ~500 km
 VISITS = [
-    _p("v1", "Bãi biển Mỹ Khê", "Bãi biển", 0.0, 0.03, 0, reviews=20000),
+    _p(
+        "v1", "Bãi biển Mỹ Khê", "Bãi biển", 0.0, 0.03, 0, reviews=20000, thumbnail="https://img/v1"
+    ),
     _p("v2", "Bảo tàng Chăm", "Bảo tàng", 0.0, 0.0, 60000),
     _p("v3", "Chùa Linh Ứng", "Chùa", 0.05, 0.05, 0),
     _p("v4", "Cầu Rồng", "Điểm mốc", 0.0, 0.01, 0, summary="nơi ngắm cầu phun lửa tối cuối tuần"),
@@ -110,7 +113,12 @@ def _respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
             ]
         else:
             pairs = [
-                {"from": i, "to": j, "duration_min": 14.6}  # phút lẻ như Vietmap trả
+                {
+                    "from": i,
+                    "to": j,
+                    "duration_min": 14.6,
+                    "distance_km": 3.2,
+                }  # phút lẻ như Vietmap
                 for i in range(n_o)
                 for j in range(n_o)
                 if i != j
@@ -119,7 +127,20 @@ def _respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "weather_forecast":
         return {
             **ok,
-            "days": [{"condition": "Nắng", "temp_min_c": 24, "temp_max_c": 31, "hours": []}] * 3,
+            "days": [
+                {
+                    "date": f"2026-10-{25 + k}",
+                    "condition": "Nắng",
+                    "temp_min_c": 24,
+                    "temp_max_c": 31,
+                    "hours": [
+                        {"time": "09:00", "chance_of_rain_pct": 10, "condition": "Nắng"},
+                        {"time": "15:00", "chance_of_rain_pct": 80 if k else 0, "condition": "Mưa"},
+                        {"time": "21:00", "chance_of_rain_pct": 0, "condition": "Trời quang"},
+                    ],
+                }
+                for k in range(2)  # ngày 3 ngoài tầm dự báo
+            ],
         }
     if name == "web_search":
         return {
@@ -145,6 +166,8 @@ def _respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
         texts = {"v4": "Tối thứ 7 ra đây xem cầu phun lửa, rất vui"}
         text = texts.get(args["place_id"], "Chỗ này đẹp")
         return {**ok, "reviews": [{"rating": 5, "text": text}]}
+    if name == "get_place_photos":
+        return {**ok, "photos": {pid: f"https://img/{pid}" for pid in args["places"]}}
     if name == "plan_day_route":
         return {**ok, "google_maps_url": "https://maps.google.com/x"}
     return {**ok}
@@ -181,6 +204,7 @@ TOOLS = (
     "plan_day_route",
     "search_places",
     "get_place_reviews",
+    "get_place_photos",
 )
 
 
@@ -332,6 +356,54 @@ async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None
     if v4 is not None:
         assert v4.matches_purpose is True
     assert names
+    # Ảnh: chỗ đã có ảnh từ browse_places không hỏi lại; còn lại lấy bằng 1 lượt get_place_photos.
+    photo_calls = [a for n, a in CALLS if n == "get_place_photos"]
+    assert len(photo_calls) == 1 and "v1" not in photo_calls[0]["places"]
+    stops = [i for o in resp.options for d in o.days for i in d.items if i.place_id]
+    assert all(i.image == f"https://img/{i.place_id}" for i in stops)
+    assert all(len(i.why) <= 3 for i in stops)
+    assert all(d.area_note for o in resp.options for d in o.days)
+    # 5 tab: lịch âm, mức đông, thời tiết theo buổi, chặng đi, chi phí, hành lý.
+    d1, d2, d3 = first.days
+    assert d1.lunar == "16/9" and d1.crowd == "medium"  # 25/10/2026 Chủ Nhật
+    assert d2.crowd == "low" and d2.holiday is None
+    assert [x.part for x in d1.sessions] == ["morning", "afternoon", "evening"]
+    assert d2.sessions[1].icon == "rain" and d2.sessions[1].rain_chance == 80
+    assert d1.temp_min == 24 and d3.sessions == [] and d3.temp_max is None
+    legs = [i for i in d1.items if i.type in ("visit", "meal", "back")]
+    assert all(i.travel_mode is None and i.travel_cost is None for i in legs)
+    assert any(i.travel_km == 3.2 for i in legs)  # km thật từ distance_matrix
+    # Chưa chọn phương tiện: ước cả xe máy; không bao giờ có bus.
+    assert all({"motorbike", "car", "taxi"} <= {a.mode for a in i.travel_alt} for i in legs)
+    assert all(a.mode != "bus" for i in legs for a in i.travel_alt)
+    assert {a.mode: a.minutes for a in d1.ride_alt}["car"] == sum(
+        {a.mode: a.minutes for a in i.travel_alt}["car"] for i in legs
+    )
+    for o in resp.options:
+        cb = o.cost_breakdown
+        assert cb.total == sum(d.cost.total for d in o.days)
+        assert cb.total == cb.stay + cb.tickets + cb.food + cb.transport + cb.extras
+        assert cb.total_min == sum(d.cost.total_min for d in o.days)
+        assert cb.total_max == sum(d.cost.total_max for d in o.days)
+        assert cb.total_min <= cb.total <= cb.total_max
+        assert cb.per_person_min <= cb.per_person <= cb.per_person_max
+        assert cb.extras == sum(d.cost.extras for d in o.days) > 0
+        labels = [e.label for e in cb.extra_items]
+        assert labels == ["Chi phí phát sinh"]
+        assert cb.extras_notes and 0 < cb.extras_pct_min <= cb.extras_pct_max <= 0.25
+        assert not any("hư xe" in n for n in cb.extras_notes)  # form không chọn phương tiện
+        assert all(e.reason and e.min <= e.max for d in o.days for e in d.cost.extra_items)
+        assert o.days[-1].cost.stay == 0 and o.days[0].cost.stay == cb.stay // 2
+    stops1 = [i for i in d1.items if i.type in ("visit", "meal")]
+    assert all((i.price_min is None) == (i.price is None) for i in stops1)
+    assert all(
+        i.price_min == i.price == i.price_max
+        for i in stops1
+        if i.price is not None and not (i.price_by or "").startswith("ước")
+    )
+    assert all(i.travel_cost_min is None and i.travel_cost_max is None for i in legs)
+    assert resp.packing and resp.packing[0].item == "CCCD / hộ chiếu"
+    assert any(p.item == "Áo mưa / ô" and "chiều ngày 2" in p.reason for p in resp.packing)
     # Chỗ DB gắn nhầm điểm đến (cách ~500 km) bị bỏ ở bước lọc.
     assert "VinWonders Nha Trang" not in names
 
@@ -398,3 +470,20 @@ async def test_message_is_read_when_fields_are_blank(llm_calls: list[str]) -> No
     resp = await _run({**form})
     assert "Extraction" in llm_calls
     assert resp.status == "ok"
+
+
+async def test_photo_tool_failure_still_returns_the_plan(
+    llm_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = _respond
+
+    def respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name == "get_place_photos":
+            raise RuntimeError("SerpApi hết quota")
+        return real(name, args)
+
+    monkeypatch.setattr(sys.modules[__name__], "_respond", respond)
+    resp = await _run(_form())
+    assert resp.status == "ok" and resp.options
+    images = [i.image for o in resp.options for d in o.days for i in d.items if i.place_id]
+    assert all(img in (None, "https://img/v1") for img in images)

@@ -17,11 +17,11 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ailusion.chat.graph import REPLY_NODE
 from ailusion.core.agent_log import AgentLog
-from ailusion.core.mcp import load_mcp_tools
 from ailusion.core.tracing import run_config
 from ailusion.itinerary import (
     ItineraryResponse,
     NoPlacesError,
+    TraceEvent,
     TripForm,
     build_itinerary_graph,
     itinerary_markdown,
@@ -29,6 +29,7 @@ from ailusion.itinerary import (
     to_response,
 )
 
+from .places import mcp_tools
 from .schemas import ChatPlanReply
 
 router = APIRouter(tags=["itinerary"])
@@ -80,7 +81,28 @@ async def run_itinerary(app: FastAPI, form: TripForm) -> ItineraryResponse:
             )
     except NoPlacesError as e:  # lỗi của dữ liệu đầu vào: báo 422 kèm lời giải thích
         raise HTTPException(status_code=422, detail=str(e)) from e
-    return to_response(state, thread_id, time.monotonic() - started)
+    response = to_response(state, thread_id, time.monotonic() - started)
+    response.trace = await read_trace(thread_id)
+    return response
+
+
+async def read_trace(thread_id: str) -> list[TraceEvent]:
+    """Nhật ký lượt vừa chạy, gọn lại (bỏ dữ liệu tool) để lưu cùng lộ trình."""
+    try:
+        events = await agent_log.latest_turn(thread_id)
+    except Exception:  # noqa: BLE001 — thiếu nhật ký thì chỉ mất khung tiến độ, lộ trình vẫn trả
+        return []
+    return [
+        TraceEvent(
+            id=event_id,
+            ts=str(e.get("ts", "")),
+            node=str(e.get("node", "")),
+            kind=str(e.get("kind", "")),
+            text=str(e.get("text", "")),
+            data={"tool": str(e["data"]["tool"])} if e.get("data", {}).get("tool") else {},
+        )
+        for event_id, e in events
+    ]
 
 
 async def itinerary_graph(app: FastAPI) -> CompiledStateGraph:
@@ -88,7 +110,7 @@ async def itinerary_graph(app: FastAPI) -> CompiledStateGraph:
     async with app.state.itinerary_lock:
         if app.state.itinerary_graph is None:
             try:
-                tools = await load_mcp_tools()
+                tools = await mcp_tools(app)
             except Exception as e:  # noqa: BLE001
                 raise HTTPException(
                     status_code=503, detail=f"Không kết nối được MCP server: {type(e).__name__}"

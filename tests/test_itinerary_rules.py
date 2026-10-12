@@ -417,10 +417,18 @@ def test_lunch_break_is_read_and_respected() -> None:
     assert p.hours[2] == (450, 1020) and p.breaks[2] == [(660, 810)]
     assert hours_text(p, 2) == "07:30–11:00 + 13:30–17:00"
     profile = profile_trip(family_form(), [], [])
-    # Tới 11:30 (đang nghỉ) -> chờ tới 13:30; tới 10:30 ở 60 phút -> chạm giờ nghỉ.
+    # Tới 11:30 (đang nghỉ) -> chờ tới 13:30, nhưng chờ 120 phút > 45 là lỗi; tới 13:00 chờ 30
+    # phút thì được; tới 10:30 ở 60 phút -> chạm giờ nghỉ.
     late = DayPlan(id="L1", day=2, leave_stay="11:30", stops=["bt"])
     run = simulate(
         late, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
+    )
+    assert run.stops[0].start == 810 and run.issues == [
+        "tới bt lúc 11:30, phải chờ 120 phút tới 13:30 mới vào được"
+    ]
+    ok = DayPlan(id="L1", day=2, leave_stay="13:00", stops=["bt"])
+    run = simulate(
+        ok, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
     )
     assert run.stops[0].start == 810 and not run.issues
     early = DayPlan(id="L2", day=2, leave_stay="10:30", stops=["bt"])
@@ -611,3 +619,400 @@ def test_same_beach_under_two_names_is_merged() -> None:
     removed = merge_duplicates(places)
     assert set(places) == {"a", "c", "d"}  # Cầu Rồng và Cầu Tình Yêu vẫn là 2 chỗ
     assert removed == ["Bãi tắm hàng dừa Mỹ Khê (trùng Bãi biển Mỹ Khê)"]
+
+
+# ------------------------------------- ảnh, lý do chọn, vùng đi, chia ngày theo cụm, thứ tự
+
+
+def test_thumbnail_is_read_from_search_tools() -> None:
+    from ailusion.itinerary.shared.tools import add_photos, add_places
+
+    pool: dict[str, Place] = {}
+    raw = {"place_id": "x", "name": "Hồ Xuân Hương", "category": "Hồ", "lat": 11.9, "lng": 108.4}
+    add_places(pool, {"status": "success", "places": [raw]}, "browse_places")
+    assert pool["x"].thumbnail is None
+    add_places(
+        pool,
+        {"status": "success", "places": [{**raw, "thumbnail": "https://img/x.jpg"}]},
+        "find_places_by_needs",
+    )
+    assert pool["x"].thumbnail == "https://img/x.jpg"  # lần sau có ảnh thì điền
+    assert add_photos(pool, {"status": "error"}) == 0
+    assert add_photos(pool, {"photos": {"x": "https://img/khac.jpg", "y": None}}) == 0
+    assert pool["x"].thumbnail == "https://img/x.jpg"  # không ghi đè ảnh đã có
+
+
+class _PhotoCtx:
+    def __init__(self, result: Any = None, fail: bool = False) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.result, self.fail = result, fail
+
+    async def tool(self, name: str, **args: Any) -> tuple[Any, dict[str, Any]]:
+        self.calls.append((name, args))
+        if self.fail:
+            return {"status": "error", "message": "hỏng"}, {"tool": name, "ok": False}
+        photos = {pid: f"https://img/{pid}.jpg" for pid in args["places"] if pid != "q"}
+        return self.result or {"status": "success", "photos": photos}, {"tool": name, "ok": True}
+
+    async def log(self, *_: Any, **__: Any) -> None:
+        return None
+
+
+def _photo_state() -> dict[str, Any]:
+    from ailusion.itinerary.shared.models import dump_places, plan_to_dict
+
+    places = {
+        "a": _place("a", thumbnail="https://img/co-san.jpg"),
+        "b": _place("b", category="Chùa"),
+        "q": _place("q", kind="meal", category="Nhà hàng"),
+        "khac": _place("khac"),
+    }
+    plan = DayPlan(id="N1-L1", day=1, leave_stay="09:00", stops=["a", "q", "b"])
+    return {
+        "form": family_form().model_dump(mode="json"),
+        "places": dump_places(places),
+        "plans": {plan.id: plan_to_dict(plan)},
+        "trip": {"options": [{"id": "PA1", "days": ["N1-L1"]}]},
+    }
+
+
+async def test_photos_are_fetched_once_for_places_missing_them() -> None:
+    from ailusion.itinerary.response import fill_photos
+    from ailusion.itinerary.shared.models import places_of
+
+    state = _photo_state()
+    ctx = _PhotoCtx()
+    out = await fill_photos(state, ctx)  # type: ignore[arg-type]
+    assert ctx.calls == [
+        ("get_place_photos", {"places": ["q", "b"], "destination": "Đà Nẵng"})
+    ]  # chỉ chỗ trong phương án, chưa có ảnh; 1 lượt
+    places = places_of(out)
+    assert places["b"].thumbnail == "https://img/b.jpg"
+    assert places["a"].thumbnail == "https://img/co-san.jpg"
+    assert places["q"].thumbnail is None  # tool trả null
+    assert out["tool_log"] == [{"tool": "get_place_photos", "ok": True}]
+
+
+async def test_photo_tool_failure_keeps_the_plan_and_full_set_skips_the_call() -> None:
+    from ailusion.itinerary.response import fill_photos
+    from ailusion.itinerary.shared.models import dump_places, places_of
+
+    state = _photo_state()
+    out = await fill_photos(state, _PhotoCtx(fail=True))  # type: ignore[arg-type]
+    assert "places" not in out and out["tool_log"][0]["ok"] is False
+    places = places_of(state)
+    for p in places.values():
+        p.thumbnail = p.thumbnail or "https://img/x.jpg"
+    state["places"] = dump_places(places)
+    ctx = _PhotoCtx()
+    assert await fill_photos(state, ctx) == {}  # type: ignore[arg-type]
+    assert not ctx.calls
+
+
+def test_summary_is_cleaned_and_trimmed() -> None:
+    from ailusion.itinerary.response import SUMMARY_CHARS, short_summary
+
+    assert short_summary("") is None
+    assert short_summary("  <b>Hồ</b>   nước  giữa\nthành phố ") == "Hồ nước giữa thành phố"
+    long = short_summary("rừng thông " * 60)
+    assert long and len(long) <= SUMMARY_CHARS and long.endswith("…") and "  " not in long
+
+
+def test_item_gets_image_summary_and_short_reasons() -> None:
+    from ailusion.itinerary.response import _day
+    from ailusion.itinerary.shared.models import Run, Stop
+
+    form = family_form()
+    places = {
+        "cho": _place(
+            "cho",
+            name="Chợ đêm Đà Lạt",
+            category="Chợ",
+            rating=4.6,
+            reviews=2300,
+            price=0,
+            price_by="tool",
+            matches_purpose=True,
+            match_by="từ khoá 'chợ'",
+            hours={2: (17 * 60, 23 * 60)},
+            thumbnail="https://img/cho.jpg",
+            summary="Chợ   đêm bán đồ len, đồ nướng",
+        ),
+    }
+    plan = DayPlan(id="N2-L1", day=2, leave_stay="17:00", stops=["cho"])
+    run = Run(stops=[Stop("cho", 1026, 1026, 1086, 6, 0)], back=1092, issues=[], unchecked=[])
+    day = _day(plan, run, places, form, {"stay": None}, True, 1_500_000, {})
+    item = day.items[1]
+    assert item.image == "https://img/cho.jpg"
+    assert item.summary == "Chợ đêm bán đồ len, đồ nướng"
+    assert item.why == [
+        "Hợp mục đích chuyến (từ khoá 'chợ')",
+        "4.6★ tin được, 2.300 đánh giá",
+        "Cách chỗ ở 6 phút",
+    ]
+    assert day.items[0].why == [] and day.items[0].image is None
+
+
+def test_reasons_mention_budget_and_hours_when_nothing_else_fits() -> None:
+    from ailusion.itinerary.response import why_of
+    from ailusion.itinerary.shared.models import Stop
+
+    p = _place(
+        "bt", category="Bảo tàng", rating=None, price=50000, price_by="tool", hours={2: (480, 1020)}
+    )
+    why = why_of(p, 2, Stop("bt", 600, 600, 690, 25, 0), first=False, daily_budget=1_500_000)
+    assert why == [
+        "Giá 50.000 đ/người, nhẹ so với ngân sách 1.500.000 đ/người/ngày",
+        "Mở cửa 08:00–17:00, ghé lúc 10:00 vừa giờ",
+    ]
+    near = why_of(p, 2, Stop("bt", 600, 600, 690, 6, 0), first=False)
+    assert "Cách điểm trước 6 phút" in near
+
+
+def test_area_note_names_the_farthest_place_and_explains_an_outlier() -> None:
+    from ailusion.itinerary.response import area_note
+
+    stay = {"name": "KS", "lat": 11.94, "lng": 108.44}
+    a = _place("a", name="Hồ Xuân Hương", lat=11.942, lng=108.442)
+    b = _place("b", name="Chợ Đà Lạt", lat=11.946, lng=108.437)
+    far = _place(
+        "far",
+        name="Chùa Linh Phước",
+        lat=11.944,
+        lng=108.58,
+        rating=4.7,
+        reviews=20000,
+        matches_purpose=True,
+    )
+    note = area_note([a, b], {"stay": stay}, {(STAY, "b"): 6.0})
+    assert note == "Các điểm trong bán kính 1 km quanh chỗ ở; xa nhất: Chợ Đà Lạt (6 phút từ chỗ ở)"
+    note = area_note([a, b, far], {"stay": stay}, {(STAY, "far"): 25.0})
+    assert note and "riêng Chùa Linh Phước xa hơn (25 phút từ chỗ ở)" in note
+    assert "hợp mục đích chuyến" in note and "4.7★" in note
+    assert area_note([], {"stay": stay}, {}) is None
+
+
+def test_split_keeps_a_far_cluster_off_the_central_day() -> None:
+    from ailusion.itinerary.coordinator.score import split_by_day
+
+    # Trung tâm Đà Lạt và một cụm cách ~15 km về phía đông (Trại Mát).
+    pool = [
+        _place("c1", category="Hồ", reviews=50000, lat=11.94, lng=108.44),
+        _place("c2", category="Chợ", reviews=9000, lat=11.943, lng=108.437),
+        _place("c3", category="Nhà thờ", reviews=4000, lat=11.936, lng=108.44),
+        _place("e1", category="Chùa", reviews=8000, lat=11.94, lng=108.58),
+        _place("e2", category="Ga", reviews=3000, lat=11.945, lng=108.575),
+        _place("e3", category="Đồi chè", reviews=2000, lat=11.95, lng=108.585),
+    ]
+    by_day = split_by_day(pool, [1, 2], {})
+    assert set(by_day[1]) == {"c1", "c2", "c3"}
+    assert set(by_day[2]) == {"e1", "e2", "e3"}
+
+
+def test_reorder_cuts_zigzag_and_respects_opening_hours() -> None:
+    from ailusion.itinerary.coordinator.simulate import reorder_visits, ride_of
+
+    profile = profile_trip(family_form(), [], [])
+    window = profile.days[1]
+    places = {k: _place(k, category=k, stay_low=30, stay_high=30) for k in ("a", "b", "c")}
+    pos = {STAY: 0, "a": 1, "b": 2, "c": 3}  # trên một đường thẳng, mỗi khoảng 10 phút
+    m = {(x, y): abs(pos[x] - pos[y]) * 10.0 for x in pos for y in pos if x != y}
+    plan = DayPlan(id="L1", day=2, leave_stay="09:00", stops=["c", "a", "b"])
+    before = ride_of(plan.stops, m)
+    assert reorder_visits(plan, places, m, window, [], [])
+    assert ride_of(plan.stops, m) < before and plan.stops in (["a", "b", "c"], ["c", "b", "a"])
+
+    # Thứ tự ngắn hơn làm tới x sau giờ đóng cửa -> giữ thứ tự cũ.
+    places = {
+        "x": _place("x", category="Bảo tàng", stay_low=30, stay_high=30, hours={2: (480, 630)}),
+        "y": _place("y", category="Chùa", stay_low=60, stay_high=60),
+    }
+    m = {
+        (STAY, "x"): 30.0,
+        ("x", "y"): 30.0,
+        ("y", STAY): 30.0,
+        (STAY, "y"): 5.0,
+        ("y", "x"): 5.0,
+        ("x", STAY): 5.0,
+    }
+    plan = DayPlan(id="L2", day=2, leave_stay="09:00", stops=["x", "y"])
+    assert not reorder_visits(plan, places, m, window, [], [])
+    assert plan.stops == ["x", "y"]
+
+
+def test_planner_sees_every_pair_of_its_day() -> None:
+    from ailusion.itinerary.agents.planner import day_pairs
+
+    codes = {f"D{i}": f"p{i}" for i in range(1, 31)}
+    matrix = {
+        (f"p{i}", f"p{j}"): float(i + j) for i in range(1, 31) for j in range(1, 31) if i != j
+    }
+    day = [f"D{i}" for i in range(1, 13)]
+    pairs = day_pairs(day, codes, matrix)
+    assert len(pairs) == 12 * 11 // 2  # mọi cặp trong ngày, không cặp của ngày khác
+    assert pairs[0] == "D1–D2 3"
+
+
+# ------------------------------------- chuỗi quán lặp, chợ đêm chờ mở cửa (lịch Đà Lạt thật)
+
+TAO_NGO = (
+    "Lẩu Gà Lá É TAO NGỘ - 70A 3 tháng 2",
+    "Lẩu Gà Lá É Tao Ngộ 39 Đường 3/2",
+    "Lẩu Gà Lá É TAO NGỘ - 02 Phạm hồng thái (Quán Nhi)",
+)
+
+
+def _dalat_meals() -> dict[str, Place]:
+    meals = {
+        f"tn{i}": _place(
+            f"tn{i}",
+            kind="meal",
+            name=name,
+            category="Nhà hàng lẩu",
+            rating=4.6 - i * 0.1,
+            reviews=3000,
+            lat=11.94 + i * 0.002,
+            lng=108.44,
+            stay_low=60,
+            stay_high=75,
+        )
+        for i, name in enumerate(TAO_NGO)
+    }
+    for pid, name, cat in (
+        ("bc", "Bánh căn Nhà Chung", "Quán bánh căn"),
+        ("bt", "Lẩu bò Ba Toa", "Nhà hàng lẩu"),
+        ("nb", "Nem nướng Bà Hùng", "Quán nem nướng"),
+        ("pc", "Phở Cường", "Quán phở"),
+    ):
+        meals[pid] = _place(
+            pid,
+            kind="meal",
+            name=name,
+            category=cat,
+            rating=4.4,
+            reviews=2000,
+            lat=11.941,
+            lng=108.441,
+            stay_low=45,
+            stay_high=60,
+        )
+    return meals
+
+
+def test_branches_of_one_restaurant_chain_count_as_one_brand() -> None:
+    from ailusion.itinerary.coordinator.score import one_per_brand
+    from ailusion.itinerary.shared.models import brand_key, same_brand
+
+    meals = _dalat_meals()
+    keys = {brand_key(n) for n in TAO_NGO}
+    assert keys == {("lau", "ga", "la", "e", "tao", "ngo")}
+    assert same_brand(meals["tn0"], meals["tn2"]) and same_brand(meals["tn1"], meals["tn2"])
+    assert not same_brand(meals["tn0"], meals["bt"])  # cùng món lẩu, khác quán
+    assert brand_key("Phở 24") == ("pho", "24")  # số là một phần tên ngắn thì giữ
+    kept = one_per_brand(list(meals.values()), (11.94, 108.44))
+    assert [p.place_id for p in kept if p.place_id.startswith("tn")] == ["tn0"]  # sao cao nhất
+    assert {"bc", "bt", "nb", "pc"} <= {p.place_id for p in kept}
+
+
+class _MatrixCtx:
+    async def tool(self, name: str, **_: Any) -> tuple[Any, dict[str, Any]]:
+        return {"status": "error", "message": "hỏng"}, {"tool": name, "ok": False}
+
+    async def log(self, *_: Any, **__: Any) -> None:
+        return None
+
+
+async def test_shortlist_keeps_one_branch_per_chain_for_the_whole_trip() -> None:
+    from ailusion.itinerary.coordinator.score import chot_danh_sach
+    from ailusion.itinerary.shared.models import dump_places, same_brand
+
+    form = family_form(destination="Đà Lạt", end_date="2026-10-26", busy_slots=[])
+    profile = profile_trip(form, [], [])
+    visits = {
+        k: _place(k, category=c, lat=11.94, lng=108.44 + i * 0.01, stay_low=60, stay_high=90)
+        for i, (k, c) in enumerate((("h", "Hồ"), ("d", "Đồi chè"), ("th", "Thác"), ("v", "Vườn")))
+    }
+    places = visits | _dalat_meals()
+    state = {
+        "form": form.model_dump(mode="json"),
+        "profile": profile.model_dump(mode="json"),
+        "places": dump_places(places),
+        "center": [11.94, 108.44],
+        "stay": None,
+    }
+    out = await chot_danh_sach(state, _MatrixCtx())  # type: ignore[arg-type]
+    meals = [places[pid] for pid in out["pool"] if places[pid].kind == "meal"]
+    chain = [m.place_id for m in meals if m.place_id.startswith("tn")]
+    assert chain == ["tn0"]  # 3 chi nhánh còn 1
+    assert not any(
+        same_brand(a, b) for i, a in enumerate(meals) for b in meals[i + 1 :]
+    )  # cả chuyến không 2 quán cùng chuỗi, nên không ngày nào lặp chuỗi của ngày khác
+    by_day = {d: [out["codes"][c] for c in cs] for d, cs in out["day_codes"].items()}
+    chain_days = [d for d, pids in by_day.items() if "tn0" in pids]
+    assert len(chain_days) <= 1 or len(meals) < 2 * len(profile.days)
+
+
+def test_place_meals_never_eats_one_chain_twice_a_day() -> None:
+    from ailusion.itinerary.coordinator.simulate import place_meals
+
+    profile = profile_trip(family_form(destination="Đà Lạt", busy_slots=[]), [], [])
+    places = _dalat_meals() | {
+        "a": _place("a", category="Hồ", stay_low=120, stay_high=120),
+        "b": _place("b", category="Khu du lịch", stay_low=330, stay_high=330),
+        "c": _place("c", category="Chùa", stay_low=100, stay_high=100),
+    }
+    ids = list(places) + [STAY]
+    m = {(x, y): 10.0 for x in ids for y in ids if x != y}
+    window = profile.days[1]  # 08:00–21:00
+    # Planner chọn 2 chi nhánh Tao Ngộ cho trưa và tối -> bỏ 1, bù quán khác chuỗi, khác món.
+    plan = DayPlan(id="L1", day=2, leave_stay="09:00", stops=["a", "tn0", "b", "c", "tn1"])
+    place_meals(plan, places, m, window, ["tn2", "bt", "bc"])
+    meals = [s for s in plan.stops if places[s].kind == "meal"]
+    assert sum(s.startswith("tn") for s in meals) == 1 and len(meals) == 2
+    assert "bc" in meals  # "Lẩu bò Ba Toa" cũng là lẩu -> chọn bánh căn cho khác món
+    assert not simulate(plan, places, m, window, [], long_stay=False).issues
+    # Bù bữa còn thiếu: chi nhánh khác của chuỗi đã ăn không được chọn.
+    plan = DayPlan(id="L2", day=2, leave_stay="09:00", stops=["a", "tn0", "b", "c"])
+    place_meals(plan, places, m, window, ["tn2", "bt", "bc"])
+    assert "tn2" not in plan.stops and "bc" in plan.stops
+
+
+def test_night_market_goes_last_instead_of_waiting_hours() -> None:
+    from ailusion.itinerary.coordinator.simulate import place_meals, reorder_visits
+    from ailusion.itinerary.shared.models import opens_late
+
+    profile = profile_trip(family_form(destination="Đà Lạt", busy_slots=[]), [], [])
+    window = profile.days[1]  # 08:00–21:00
+    places = {
+        "cd": _place(
+            "cd",
+            name="Chợ Đêm Đà Lạt",
+            category="Chợ đêm",
+            stay_low=60,
+            stay_high=90,
+            hours={2: (17 * 60, 23 * 60)},
+        ),
+        "a": _place("a", name="Hồ Xuân Hương", category="Hồ", stay_low=120, stay_high=120),
+        "c": _place("c", name="Thiền viện Trúc Lâm", category="Chùa", stay_low=90, stay_high=90),
+        "b": _place(
+            "b", name="Thung lũng Tình Yêu", category="Khu du lịch", stay_low=240, stay_high=240
+        ),
+        "q1": _place("q1", kind="meal", category="Quán phở", stay_low=45, stay_high=45),
+        "q2": _place("q2", kind="meal", category="Nhà hàng lẩu", stay_low=45, stay_high=45),
+    }
+    assert opens_late(places["cd"], 2) and not opens_late(places["a"], 2)
+    assert opens_late(_place("pub", name="Maze Bar", category="Quán bar"), 2)  # chưa rõ giờ
+    ids = list(places) + [STAY]
+    m = {(x, y): 10.0 for x in ids for y in ids if x != y}
+    # Planner xếp chợ đêm giữa buổi sáng (như lịch thật: tới 13:48, chờ mở cửa 270 phút).
+    plan = DayPlan(id="L1", day=2, leave_stay="08:00", stops=["a", "cd", "q1", "c", "b", "q2"])
+    before = simulate(plan, places, m, window, [], long_stay=False)
+    assert any("Chợ Đêm Đà Lạt" in i and "phải chờ" in i for i in before.issues)
+    assert reorder_visits(plan, places, m, window, [], [])
+    place_meals(plan, places, m, window, [])
+    visits = [s for s in plan.stops if places[s].kind != "meal"]
+    assert visits[-1] == "cd"
+    run = simulate(plan, places, m, window, [], long_stay=False)
+    market = next(s for s in run.stops if s.place_id == "cd")
+    assert market.start >= 17 * 60 and market.wait <= 45
+    assert not run.issues

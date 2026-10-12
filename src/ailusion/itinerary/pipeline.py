@@ -11,12 +11,14 @@ Mỗi bước do một làn làm, giống trang thiết kế (C = Coordinator, c
     6     loc               C            coordinator/filter.py
     6a/b  xac_minh          Experience   agents/experience.py    (C gửi 2 agent song song,
                             Budget       agents/budget.py         coordinator/filter.py)
-    7–8   cham, chot_danh_sach  C        coordinator/score.py
+    7–8   cham, chot_danh_sach  C        coordinator/score.py    (chia ngày theo cụm gần nhau)
     9     xep_lich          Planner      agents/planner.py
-    10–11 kiem_lich         C            coordinator/simulate.py (lệch -> Planner sửa 1 lần)
+    10–11 kiem_lich         C            coordinator/simulate.py (sắp lại thứ tự cho ít ngồi
+                                                                  xe, đặt quán ăn; lệch ->
+                                                                  Planner sửa 1 lần)
     12–15 xep_hang, ghep    C            coordinator/rank.py
     16    quyet_dinh        Decision     agents/decision.py
-    17    tra_ket_qua       C            response.py
+    17    tra_ket_qua       C            response.py             (ảnh: get_place_photos 1 lượt)
 
 Mỗi node là `async def ten_node(state, ctx) -> dict` (phần state cần cập nhật). `ctx`
 (shared/context.py) gọi tool, gọi LLM, ghi nhật ký; state (shared/models.py) là dict thuần để
@@ -70,7 +72,7 @@ MAIN_FLOW: list[Node] = [
 def build_itinerary_graph(tools: list[BaseTool]) -> StateGraph:
     def bind(fn: Node) -> Callable[[ItineraryState, RunnableConfig], Awaitable[dict[str, Any]]]:
         async def node(state: ItineraryState, config: RunnableConfig) -> dict[str, Any]:
-            return await fn(state, Ctx(tools, config))
+            return await fn(state, Ctx(tools, config, node=fn.__name__))
 
         node.__name__ = fn.__name__
         return node

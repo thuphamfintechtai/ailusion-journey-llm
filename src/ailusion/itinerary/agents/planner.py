@@ -24,6 +24,7 @@ from ..shared.models import (
     Place,
     form_of,
     matrix_of,
+    opens_late,
     places_of,
     plan_to_dict,
     profile_of,
@@ -42,6 +43,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 6. Bữa trưa (11:00–13:30) và bữa tối (18:00–20:00) nằm trong khung giờ thì chèn quán Q… vào đúng chỗ trong `stops`.
 7. Mỗi lịch tối đa 1 chỗ đi chơi của mỗi loại (cột "loại"): không xếp 2 spa, 2 chùa… trong cùng một ngày. Một mã không lặp lại trong cùng một lịch.
 8. Mỗi ngày CHỈ dùng mã trong danh sách của chính ngày đó. Hệ thống đã chia chỗ cho từng ngày (theo giờ mở cửa, gần nhau, khác loại) để các ngày không đi lại chỗ cũ.
+9. Chỗ ghi "đi buổi tối" (chợ đêm, phố đi bộ, bar, mở cửa từ chiều muộn) xếp cuối ngày, quanh bữa tối; không tới trước giờ mở cửa rồi đứng chờ (chờ quá 45 phút là lỗi).
 
 # Làm các lịch khác nhau thật sự
 
@@ -146,6 +148,27 @@ def day_codes_of(state: dict[str, Any]) -> dict[int, list[str]]:
     return {d: split.get(str(d), list(state["codes"])) for d in days}
 
 
+MAX_PAIRS_PER_DAY = 300  # trần an toàn; một ngày ~12 chỗ chỉ có ~66 cặp
+
+
+def day_pairs(
+    day_codes: list[str], codes: dict[str, str], matrix: dict[tuple[str, str], float]
+) -> list[str]:
+    """Phút đi giữa từng cặp chỗ CỦA MỘT NGÀY ("D1–D3 12", trung bình 2 chiều), gần trước: Planner
+    chỉ ghép chỗ trong ngày nên không cần cặp khác ngày, và không cặp nào của ngày bị cắt mất."""
+    out = []
+    for i, a in enumerate(day_codes):
+        for b in day_codes[i + 1 :]:
+            ways = [
+                v
+                for v in (matrix.get((codes[a], codes[b])), matrix.get((codes[b], codes[a])))
+                if v is not None
+            ]
+            if ways:
+                out.append((sum(ways) / len(ways), f"{a}–{b} {round(sum(ways) / len(ways))}"))
+    return [text for _, text in sorted(out)[:MAX_PAIRS_PER_DAY]]
+
+
 def planner_input(
     state: dict[str, Any], days: list[int], fix: dict[int, list[str]] | None = None
 ) -> str:
@@ -155,7 +178,6 @@ def planner_input(
     by_day = day_codes_of(state)
     matrix = matrix_of(state)
     lines = []
-    shown: set[str] = set()
     for d in profile.days:
         if d.day not in days:
             continue
@@ -177,7 +199,6 @@ def planner_input(
         )
         for code in by_day[d.day]:
             p = places[codes[code]]
-            shown.add(code)
             stay = f"{p.stay_low}–{p.stay_high} phút" if p.stay_low else "chưa rõ"
             price = f"{p.price:,} đ".replace(",", ".") if p.price is not None else "chưa có giá"
             from_stay = matrix.get((STAY, p.place_id))
@@ -185,14 +206,12 @@ def planner_input(
                 f"{code} | {p.name} | {p.group} | {hours_text(p, d.day)} | {stay} | {price} | "
                 f"{int(from_stay) if from_stay is not None else '?'} phút"
                 + (" | hợp mục đích" if p.matches_purpose else "")
+                + (" | đi buổi tối" if p.kind != "meal" and opens_late(p, d.day) else "")
             )
+        pairs = day_pairs(by_day[d.day], codes, matrix)
+        if pairs:
+            lines.append(f"Phút đi giữa các chỗ của ngày {d.day}: " + ", ".join(pairs))
         lines.append("")
-    back = {codes[c]: c for c in shown}
-    pairs = [
-        f"{back[a]}→{back[b]} {int(v)}" for (a, b), v in matrix.items() if a in back and b in back
-    ]
-    if pairs:
-        lines.append("# Phút đi giữa các chỗ\n" + ", ".join(pairs[:400]))
     lines.append(
         f"\n# Nhóm khách: {profile.group} {GROUP_NAMES[profile.group]}; mục đích: "
         + (", ".join(PURPOSE_NAMES[p] for p in profile.purposes) or "chưa rõ")

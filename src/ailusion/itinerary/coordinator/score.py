@@ -5,7 +5,8 @@
   trội, rồi xếp theo điều nhóm khách coi trọng.
 - Bước 8 (`chot_danh_sach`): ma trận phút đi giữa chỗ ở và các chỗ đáng xét; sức chứa từng ngày
   = phút rảnh ÷ (thời gian ở lại phổ biến + thời gian đi phổ biến); lấy từ tầng không bị trội cho
-  tới khi đủ, đặt mã ngắn D1, D2… (chỗ chơi), Q1, Q2… (quán) cho Planner.
+  tới khi đủ, đặt mã ngắn D1, D2… (chỗ chơi), Q1, Q2… (quán) cho Planner; chia chỗ cho từng
+  ngày theo cụm gần nhau (`split_by_day`) để một ngày không chạy từ đầu này sang đầu kia.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from ..shared.models import (
     place_to_dict,
     places_of,
     profile_of,
+    same_brand,
     stays_of,
 )
 from ..shared.tools import tool_ok
@@ -206,16 +208,57 @@ def pick_pool(
     return chosen, tiers_out
 
 
-def split_by_day(
-    pool: list[Place], days: list[int], minutes: dict[str, float]
-) -> dict[int, list[str]]:
-    """Chia chỗ cho từng ngày TRƯỚC khi đưa Planner, để không ngày nào đi lại chỗ ngày khác.
+def one_per_brand(meals: list[Place], center: tuple[float, float] | None = None) -> list[Place]:
+    """Mỗi thương hiệu / chuỗi quán chỉ giữ 1 chi nhánh: sao tin được cao nhất, rồi gần trung tâm
+    nhất. Không thì cả chuyến ăn 3 bữa ở 3 chi nhánh "Lẩu Gà Lá É Tao Ngộ"."""
+    best = sorted(
+        meals,
+        key=lambda p: (-(p.rating_floor or 0), km(center, (p.lat, p.lng)) if center else 0.0),
+    )
+    kept: list[Place] = []
+    for p in best:
+        if not any(same_brand(p, k) for k in kept):
+            kept.append(p)
+    return kept
 
-    Chỗ chơi: mỗi ngày lấy 1 chỗ nổi tiếng nhất còn mở cửa ngày đó làm "mỏ neo"; các chỗ còn lại
-    (nổi tiếng trước) vào ngày có mỏ neo gần nhất (phút đi), miễn là ngày đó mở cửa, chưa có chỗ
-    cùng loại và chưa đầy. Không ngày nào nhận được thì nới luật cùng loại, rồi nới số lượng.
-    Quán ăn: đủ nhiều (≥ 2 quán mỗi ngày) thì chia theo mỏ neo gần nhất; ít thì ngày nào cũng
-    dùng chung. `minutes`: "id_a|id_b" -> phút đi (ma trận bước 8).
+
+def varied_meals(meals: list[Place]) -> list[Place]:
+    """Xếp quán cho đa dạng món: mỗi lượt lấy tối đa `MEALS_PER_CUISINE` quán mỗi loại (giữ thứ tự
+    có sẵn trong loại), quán cùng loại thừa ra xuống lượt sau."""
+    seen: dict[str, int] = {}
+    keyed = []
+    for i, p in enumerate(meals):
+        keyed.append((seen.get(p.group, 0) // MEALS_PER_CUISINE, i, p))
+        seen[p.group] = seen.get(p.group, 0) + 1
+    return [p for _, _, p in sorted(keyed, key=lambda t: t[:2])]
+
+
+MEALS_PER_CUISINE = 2
+# Quán cùng loại món với quán đã có của ngày: coi như xa thêm ngần này phút khi chia ngày.
+SAME_CUISINE_MIN = 15
+
+
+# Mỏ neo chỉ chọn trong ngần này × số ngày chỗ nổi tiếng nhất: không để một chỗ ít người biết
+# nằm lẻ ngoài rìa thành mỏ neo chỉ vì nó xa.
+ANCHOR_POOL = 2
+
+
+def split_by_day(
+    pool: list[Place],
+    days: list[int],
+    minutes: dict[str, float],
+    travel_mode: str | None = None,
+) -> dict[int, list[str]]:
+    """Chia chỗ cho từng ngày TRƯỚC khi đưa Planner, theo cụm gần nhau, không ngày nào đi lại chỗ
+    ngày khác.
+
+    Chỗ chơi: ngày 1 lấy chỗ nổi tiếng nhất còn mở cửa làm "mỏ neo"; mỗi ngày sau lấy mỏ neo xa
+    các mỏ neo trước nhất (phút đi gần nhất tới mỏ neo đã có × hệ số nổi tiếng 0,5–1), để mỗi ngày
+    là một vùng. Các chỗ còn lại (nổi tiếng trước) vào ngày có phút đi TRUNG BÌNH tới các chỗ đã
+    có của ngày ít nhất, miễn là ngày đó mở cửa, chưa có chỗ cùng loại và chưa đầy. Không ngày nào
+    nhận được thì nới luật cùng loại, rồi nới số lượng. Quán ăn: đủ nhiều (≥ 2 quán mỗi ngày) thì
+    vào ngày có cụm chỗ chơi gần nhất; ít thì ngày nào cũng dùng chung. `minutes`: "id_a|id_b" ->
+    phút đi (ma trận bước 8); thiếu cặp thì ước theo đường chim bay.
     """
     visits = sorted((p for p in pool if p.kind != "meal"), key=lambda p: -(p.reviews or 0))
     meals = sorted((p for p in pool if p.kind == "meal"), key=lambda p: -(p.reviews or 0))
@@ -224,16 +267,42 @@ def split_by_day(
     def is_open(p: Place, day: int) -> bool:
         return p.hours.get(day, "chưa rõ") is not None  # chưa rõ giờ thì coi như mở
 
+    def gap(a: Place, b: Place) -> float:
+        known = [
+            v
+            for v in (
+                minutes.get(f"{a.place_id}|{b.place_id}"),
+                minutes.get(f"{b.place_id}|{a.place_id}"),
+            )
+            if v is not None
+        ]
+        return sum(known) / len(known) if known else estimate_minutes(a, b, travel_mode)
+
     def far(p: Place, day: int) -> float:
-        anchor = out[day][0] if out[day] else None
-        return minutes.get(f"{anchor.place_id}|{p.place_id}", 999.0) if anchor else 0.0
+        members = [q for q in out[day] if q.kind != "meal"]
+        return sum(gap(p, q) for q in members) / len(members) if members else 999.0
+
+    top = math.log1p(max((p.reviews or 0 for p in visits), default=0))
+
+    def fame(p: Place) -> float:
+        return 0.5 + 0.5 * math.log1p(p.reviews or 0) / top if top else 1.0
 
     rest = list(visits)
-    for day in days:  # mỏ neo
-        anchor = next((p for p in rest if is_open(p, day)), None)
-        if anchor:
-            out[day].append(anchor)
-            rest.remove(anchor)
+    famous = {p.place_id for p in visits[: ANCHOR_POOL * len(days)]}
+    anchors: list[Place] = []
+    for day in days:
+        open_ = [p for p in rest if is_open(p, day)]
+        options = [p for p in open_ if p.place_id in famous] or open_
+        if not options:
+            continue
+        anchor = (
+            max(options, key=lambda p: min(gap(p, a) for a in anchors) * fame(p))
+            if anchors
+            else options[0]
+        )
+        out[day].append(anchor)
+        anchors.append(anchor)
+        rest.remove(anchor)
     per_day = math.ceil(len(visits) / max(1, len(days)))
     for p in rest:
         open_days = [d for d in days if is_open(p, d)]
@@ -249,11 +318,15 @@ def split_by_day(
                 break
     if len(meals) >= 2 * len(days):
         per_meal = math.ceil(len(meals) / len(days))
-        anchors = {d: list(out[d]) for d in days}
         taken = {d: 0 for d in days}
         for m in meals:
             fits = [d for d in days if taken[d] < per_meal] or days
-            day = min(fits, key=lambda d: far(m, d) if anchors[d] else 999.0)
+
+            def cost(d: int, m: Place = m) -> tuple[float, int]:
+                same = sum(q.kind == "meal" and q.group == m.group for q in out[d])
+                return far(m, d) + SAME_CUISINE_MIN * same, taken[d]
+
+            day = min(fits, key=cost)
             out[day].append(m)
             taken[day] += 1
     else:
@@ -372,7 +445,8 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         per[p.group] = per.get(p.group, 0) + 1
         (first if per[p.group] <= type_cap(p.group, len(profile.days)) else rest).append(p)
     ordered_visits = first + rest
-    ordered_meals = sorted(meals, key=lambda p: -(p.rating_floor or 0))
+    # Mỗi chuỗi quán 1 chi nhánh; đa dạng loại món trước khi cắt bớt.
+    ordered_meals = varied_meals(one_per_brand(meals, center))
     # Ít nhất 2 quán riêng mỗi ngày (bước chia ngày cần vậy mới không phải dùng chung quán).
     n_meal_slots = max(
         sum(1 + (to_minutes(d.day_end) >= 19 * 60) for d in profile.days), 2 * len(profile.days)
@@ -385,10 +459,14 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     )
     ids = ([STAY] if stay else []) + [p.place_id for p in shortlist]
     matrix: dict[str, float] = {}
+    km_matrix: dict[str, float] = {}  # km đường đi thật cùng lượt gọi, cho tab Chi phí
     for pair in (data.get("pairs") or []) if tool_ok(data) else []:
+        key = f"{ids[pair['from']]}|{ids[pair['to']]}"
+        if pair.get("distance_km") is not None:
+            km_matrix[key] = float(pair["distance_km"])
         if pair.get("duration_min") is None:
             continue
-        matrix[f"{ids[pair['from']]}|{ids[pair['to']]}"] = float(pair["duration_min"])
+        matrix[key] = float(pair["duration_min"])
     # Cặp tool không trả (lỗi, quá giới hạn, không có đường): ước theo đường chim bay thay vì để
     # trống — phút đi trống bị tính là 0, lịch thiếu dữ liệu lại thành lịch "ít ngồi xe nhất".
     notes = list(state.get("notes") or [])
@@ -427,20 +505,26 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         prefix = "Q" if p.kind == "meal" else "D"
         codes[f"{prefix}{sum(c.startswith(prefix) for c in codes) + 1}"] = p.place_id
     code_of = {pid: c for c, pid in codes.items()}
-    by_day = split_by_day(pool, [d.day for d in profile.days], matrix)
+    by_day = split_by_day(pool, [d.day for d in profile.days], matrix, form.travel_mode)
     day_codes = {str(d): [code_of[pid] for pid in pids] for d, pids in by_day.items()}
     await ctx.log(
         "chot_danh_sach",
         "finding",
         f"Sức chứa {caps} chỗ/ngày, đưa Planner "
         f"{sum(p.kind == 'visit' for p in pool)} chỗ chơi + "
-        f"{sum(p.kind == 'meal' for p in pool)} quán",
+        f"{sum(p.kind == 'meal' for p in pool)} quán"
+        + (
+            f" (bỏ {len(meals) - len(ordered_meals)} chi nhánh trùng chuỗi quán)"
+            if len(ordered_meals) < len(meals)
+            else ""
+        ),
     )
     return {
         "pool": [p.place_id for p in pool],
         "codes": codes,
         "day_codes": day_codes,
         "matrix": matrix,
+        "km_matrix": km_matrix,
         "notes": notes,
         "tool_log": [m_log],
     }

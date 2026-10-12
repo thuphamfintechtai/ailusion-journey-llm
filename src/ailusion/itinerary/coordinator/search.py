@@ -89,6 +89,7 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
     stays: dict[str, Place] = {}
     weather: list[dict[str, Any]] = []
     festivals: list[str] = []
+    festival_dates: list[dict[str, Any]] = []  # lễ hội có ngày, để gắn vào từng ngày đi
     alerts: list[str] = []
     for (name, _args), data in zip(calls, results, strict=True):
         if name in ("browse_places", "find_places_by_needs"):
@@ -101,6 +102,10 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
             for f in data.get("festivals") or data.get("events") or []:
                 if f.get("name") or f.get("title"):
                     festivals.append(f.get("name") or f.get("title"))
+                if f.get("name") and f.get("start_date"):
+                    festival_dates.append(
+                        {"name": f["name"], "start": f["start_date"], "end": f.get("end_date")}
+                    )
         elif name == "disaster_alerts" and tool_ok(data):
             for e in data.get("events") or []:
                 if str(e.get("alert_level", "")).lower() == "red" and e.get("is_current", True):
@@ -158,6 +163,7 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
         "stays": dump_places(stays),
         "weather": weather,
         "festivals": list(dict.fromkeys(festivals))[:8],
+        "festival_dates": festival_dates[:8],
         "alerts": alerts,
         "tool_log": logs,
     }

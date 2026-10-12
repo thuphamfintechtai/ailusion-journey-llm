@@ -132,3 +132,12 @@ def test_tail_block_is_shorter_than_the_redis_socket_timeout() -> None:
     from ailusion.core.redis import SOCKET_TIMEOUT_SECONDS
 
     assert TAIL_BLOCK_MS < SOCKET_TIMEOUT_SECONDS * 1000
+
+
+async def test_latest_turn_returns_finished_turn_only(log: AgentLog):
+    await _run_turn(log, "lượt 1")
+    await _run_turn(log, "lượt 2")
+
+    events = [e for _, e in await log.latest_turn(THREAD)]
+    assert _kinds(events) == [(TURN_NODE, "start"), ("tra_loi", "answer"), (TURN_NODE, "done")]
+    assert events[1]["text"] == "lượt 2"

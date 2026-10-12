@@ -52,9 +52,11 @@ class Spent:
 
 
 class Ctx:
-    def __init__(self, tools: list[BaseTool], config: RunnableConfig) -> None:
+    def __init__(self, tools: list[BaseTool], config: RunnableConfig, node: str = "") -> None:
         self.tools = tools_by_name(tools)
         self.thread_id = config["configurable"]["thread_id"]
+        # Node đang chạy: ghi kèm mỗi lượt gọi tool vào nhật ký, để web hiện chip nguồn đã dùng.
+        self.node = node
 
     async def tool(self, name: str, **args: Any) -> tuple[Any, dict[str, Any]]:
         """Gọi 1 tool MCP -> (kết quả, dòng nhật ký). Tool hỏng thì trả lỗi, không ném lỗi."""
@@ -63,11 +65,14 @@ class Ctx:
                 "tool": name,
                 "ok": False,
             }
+        await self._trace("tool_call", f"gọi {name}", tool=name)
         try:
             data = await call_tool(self.tools[name], **args)
         except Exception as e:  # noqa: BLE001 - một tool hỏng không làm sập cả lộ trình
             data = {"status": "error", "message": f"{type(e).__name__}: {e}"}
-        return data, {"tool": name, "ok": tool_ok(data)}
+        ok = tool_ok(data)
+        await self._trace("tool_result", f"{name} {'xong' if ok else 'lỗi'}", tool=name, ok=ok)
+        return data, {"tool": name, "ok": ok}
 
     async def many(self, calls: list[tuple[str, dict[str, Any]]]) -> tuple[list[Any], list[dict]]:
         """Gọi nhiều tool song song, giữ đúng thứ tự."""
@@ -87,6 +92,7 @@ class Ctx:
             out = await llm.ainvoke([SystemMessage(system), HumanMessage(human)])
         except Exception as e:  # noqa: BLE001
             log.warning("%s: LLM lỗi — %s: %s", node, type(e).__name__, str(e)[:300])
+            await self._trace("step", "LLM lỗi, dùng phương án dự phòng", node=node)
             return None, 0, []
         raw, parsed = (out.get("raw"), out.get("parsed")) if isinstance(out, dict) else (None, out)
         meta = getattr(raw, "usage_metadata", None) or {}
@@ -99,3 +105,13 @@ class Ctx:
 
     async def log(self, node: str, kind: str, text: str, **data: Any) -> None:
         await agent_log.publish(self.thread_id, node=node, kind=kind, text=text, **data)
+
+    async def _trace(self, kind: str, text: str, node: str = "", **data: Any) -> None:
+        """Nhật ký lượt gọi tool / lỗi LLM. Ghi nhật ký hỏng thì bỏ qua, không làm hỏng lộ trình."""
+        node = node or self.node
+        if not node:
+            return
+        try:
+            await agent_log.publish(self.thread_id, node=node, kind=kind, text=text, **data)
+        except Exception:  # noqa: BLE001
+            log.debug("không ghi được nhật ký %s/%s", node, kind)

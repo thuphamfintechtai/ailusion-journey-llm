@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from ailusion.chat.trip_info import TripInfo
@@ -92,3 +94,37 @@ class TripInfoRequest(BaseModel):
 class History(BaseModel):
     thread_id: str
     messages: list[Message]
+
+
+class PlaceReview(BaseModel):
+    rating: float | None = None
+    date: str | None = None
+    text: str = ""
+    images: list[str] = Field(default_factory=list, description="Ảnh khách đăng kèm (tối đa 4)")
+
+
+class PlaceDetail(BaseModel):
+    """Chi tiết một địa điểm khi user bấm thẻ địa điểm trong lộ trình."""
+
+    place_id: str
+    name: str | None = None
+    category: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    website: str | None = None
+    maps_url: str | None = None
+    lat: float | None = None
+    lng: float | None = None
+    rating: float | None = None
+    reviews_count: int | None = None
+    price: str | None = None
+    hours: dict[str, Any] | list[Any] | None = Field(
+        default=None, description="Giờ mở cửa, giữ nguyên dạng tool trả về"
+    )
+    description: str | None = None
+    attributes: dict[str, Any] | None = None
+    images: list[str] = Field(default_factory=list, description="Ảnh đại diện trước, tối đa 10")
+    reviews: list[PlaceReview] = Field(default_factory=list, description="Tối đa 10 review")
+    has_review_photos_option: bool = Field(
+        default=False, description="Có thể gọi lại với review_photos=true để lấy review kèm ảnh"
+    )

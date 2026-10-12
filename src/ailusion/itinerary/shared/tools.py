@@ -99,11 +99,28 @@ def add_places(pool: dict[str, Place], result: Any, source: str) -> None:
                 source=source,
             )
             pool[pid] = place
+        if not place.thumbnail and raw.get("thumbnail"):
+            place.thumbnail = str(raw["thumbnail"])
         if place.price is None and price is not None:
             place.price, place.price_by = price, "tool"
         for need, status in (raw.get("needs_status") or {}).items():
             if place.need_status.get(need, "unknown") == "unknown":
                 place.need_status[need] = status
+
+
+def add_photos(pool: dict[str, Place], result: Any) -> int:
+    """get_place_photos: `{"photos": {place_id: link hoặc null}}` -> điền `thumbnail` còn trống.
+    Trả số chỗ vừa có ảnh; tool lỗi thì không đổi gì."""
+    if not isinstance(result, dict) or result.get("status") == "error":
+        return 0
+    photos = result.get("photos")
+    filled = 0
+    for pid, url in photos.items() if isinstance(photos, dict) else []:
+        place = pool.get(pid)
+        if place is not None and not place.thumbnail and isinstance(url, str) and url:
+            place.thumbnail = url
+            filled += 1
+    return filled
 
 
 def add_stays(stays: dict[str, Place], result: Any, source: str) -> None:
