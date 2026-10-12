@@ -16,8 +16,8 @@ import psycopg
 from pydantic import SecretStr
 from redis.asyncio import Redis
 
-from ailusion.config import Settings, get_settings
-from ailusion.memory import Namespaces, long_term_store, short_term_checkpointer
+from ailusion.core.memory import long_term_store, profile_namespace, short_term_checkpointer
+from ailusion.core.settings import Settings, get_settings
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
 ICON = {OK: "\033[32m✔\033[0m", WARN: "\033[33m!\033[0m", FAIL: "\033[31m✘\033[0m", SKIP: "·"}
@@ -157,7 +157,7 @@ async def _postgres_server(s: Settings) -> list[Result]:
 async def _store(s: Settings) -> Result:
     """Ghi -> đọc -> xoá một bản ghi thật để chắc store dùng được."""
     async with long_term_store(s) as store:
-        namespace = Namespaces.profile("__healthcheck__")
+        namespace = profile_namespace("__healthcheck__")
         await store.aput(namespace, "ping", {"text": "ok"}, index=False)
         item = await store.aget(namespace, "ping")
         await store.adelete(namespace, "ping")

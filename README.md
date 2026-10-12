@@ -1,37 +1,47 @@
 # ailusion-journey-llm
 
-Hệ đa-agent lập kế hoạch du lịch trên LangGraph (Graph A — Nghiên cứu, Graph B — Quyết định, What-if).
-Repo hiện có **phần hạ tầng**: observability, bộ nhớ ngắn/dài hạn, cache tool, stream nhật ký agent, OSRM.
+Dịch vụ LLM của Ailusion Journey (LangGraph, cổng 8001): **chat** với trợ lý du lịch và
+**pipeline lập lộ trình** 17 bước (form -> tối đa 3 phương án). Backend (`ailusion-journey-be`)
+gọi vào qua HTTP; tool dữ liệu (địa điểm, chỗ ở, thời tiết, đường đi…) lấy từ MCP server
+(`ailusion-journey-mcp`).
 
 ## Bố cục source
 
 ```
 src/ailusion/
-├── config/         Settings — trường nào đọc từ biến môi trường nào
-├── llm.py          chọn & tạo chat model (Gemini / OpenAI)
-├── observability/  tracing.py (LangSmith + Langfuse) · pii.py (che PII trước khi gửi)
-├── memory/         checkpointer.py (ngắn hạn, Redis) · store.py (dài hạn, Postgres)
-│                   namespaces.py (quy ước khoá bộ nhớ dài hạn)
-├── redis/          client.py (kết nối dùng chung) · keys.py (toàn bộ quy ước key)
-├── runtime/        run_config.py · agent_log.py · tool_cache.py
-├── graphs/         chat.py — luồng hỏi/đáp với Gemini
-└── api/            app.py — HTTP API cho backend gọi vào
+├── api/          HTTP API — chỉ nhận request, gọi graph, trả kết quả
+│   ├── app.py        khởi động (mở Redis/Postgres 1 lần), /health, /chat/{id}/events
+│   ├── chat.py       /chat, /chat/stream, /chat/{id}, /chat/{id}/trip, /trip-info
+│   ├── itinerary.py  /itinerary, /chat/{id}/plan
+│   └── schemas.py    kiểu dữ liệu vào/ra (hợp đồng với backend)
+├── chat/         luồng chat: lọc tin nhắn vào form chuyến đi, trả lời
+│   ├── graph.py      loc_tin (cập nhật form) -> tra_loi (trả lời, stream được)
+│   ├── filter.py     bộ lọc luật: tin nào đáng gọi LLM cập nhật form
+│   ├── trip_info.py  form chuyến đi trong chat + LLM đọc tin nhắn để điền
+│   ├── trip_store.py lưu / đọc form đang bàn (Postgres store)
+│   └── prompts.py    prompt của chat
+├── itinerary/    pipeline lập lộ trình — chia theo 5 làn của trang thiết kế
+│   ├── pipeline.py   nối các bước; bảng "bước -> làn -> file" ở đầu file
+│   ├── coordinator/  làn Coordinator (code, không LLM)
+│   │   profile.py B1,3–4 · search.py B5 · filter.py B6 · score.py B7–8
+│   │   simulate.py B10–11 · rank.py B12–15
+│   ├── agents/       5 agent LLM, mỗi file: prompt + đầu ra + luật code kiểm
+│   │   intake.py B2 · experience.py B6a · budget.py B6b · planner.py B9 · decision.py B16
+│   ├── shared/       form.py (B1) · models.py · context.py · tools.py · llm.py · math.py
+│   └── response.py   B17 kết quả trả về (JSON + dạng chữ cho chat)
+└── core/         hạ tầng dùng chung
+    ├── settings.py   biến môi trường -> Settings
+    ├── llm.py        tạo chat model (mặc định openai:gpt-4.1-mini)
+    ├── mcp.py        nạp tool từ MCP server, gọi tool trả JSON
+    ├── redis.py      Redis client + quy ước key
+    ├── memory.py     checkpointer Redis (ngắn hạn) + store Postgres (dài hạn)
+    ├── agent_log.py  stream nhật ký agent cho web xem theo thời gian thực
+    ├── tracing.py    LangSmith + Langfuse, config mỗi lượt chạy graph
+    └── pii.py        che dữ liệu cá nhân trước khi gửi trace
 ```
 
-Mọi thứ thường dùng import thẳng từ `ailusion`; muốn đọc chi tiết thì vào package tương ứng.
-
-## Sơ đồ → hạ tầng
-
-| Ô trong sơ đồ | Hạ tầng | Code |
-|---|---|---|
-| Langfuse — trace mọi lượt gọi tool, chi phí, độ trễ | Langfuse Cloud (SDK v4, OTel) | `observability/tracing.py` |
-| (thêm) LangSmith — debug cây run LangGraph, eval | LangSmith Cloud | `observability/tracing.py` |
-| Che dữ liệu nhạy cảm — che PII trước trace | Regex VN: sđt, email, CCCD/CMND, hộ chiếu, số thẻ (Luhn), gắn vào cả hai tracer | `observability/pii.py` |
-| Bộ nhớ ngắn hạn — checkpointer, trạng thái graph, chuỗi what-if | Redis 8 · `AsyncRedisSaver` có TTL | `memory/checkpointer.py` |
-| Bộ nhớ dài hạn — hồ sơ, tri thức, hiệu chỉnh sai số, thói quen | Postgres 17 + pgvector · `AsyncPostgresStore` | `memory/store.py`, `memory/namespaces.py` |
-| Kênh stream nhật ký agent | Redis Streams `agentlog:<thread_id>` | `runtime/agent_log.py` |
-| Giá & chỗ trống, thời tiết, SerpAPI… (giảm chi phí gọi lại) | Redis cache theo TTL từng tool | `runtime/tool_cache.py` |
-| Khoảng cách & thời gian, Tối ưu tuyến đường (OSRM) | OSRM car + foot, bản đồ Việt Nam (tuỳ chọn) | `docker-compose.yml` profile `routing` |
+Quy ước: prompt chỉ nằm trong `chat/prompts.py` và `itinerary/agents/*.py` (có test kiểm). Trong
+pipeline lập lộ trình, LLM chỉ đề xuất kèm bằng chứng (câu trích, link); code kiểm rồi mới nhận.
 
 ## Yêu cầu
 
@@ -46,13 +56,12 @@ Mọi thứ thường dùng import thẳng từ `ailusion`; muốn đọc chi ti
 make env        # tạo .env từ .env.example rồi điền key
 make up         # Redis + Postgres
 make install    # uv sync
-make health     # kiểm tra Redis modules, Postgres extensions, key LangSmith/Langfuse/LLM/SerpAPI
-make smoke      # graph mini: checkpoint -> what-if -> store -> stream -> trace
+make health     # kiểm tra Redis modules, Postgres extensions, key LangSmith/Langfuse/LLM
+make api        # chạy API
 ```
 
-`make smoke` không gọi LLM. Khi `make health` báo LangSmith và Langfuse đều OK, mở UI:
-trace nằm trong project `LANGSMITH_PROJECT` (lọc tag `graph:smoke`, `graph:what_if`) và trong
-Langfuse → Sessions → `smoke-xxxx`. Số điện thoại trong yêu cầu mẫu phải hiển thị là `<PHONE>`.
+Trace nằm trong project `LANGSMITH_PROJECT` (lọc tag `graph:chat`, `graph:itinerary`) và trong
+Langfuse → Sessions.
 
 ### Lấy key
 
@@ -70,6 +79,9 @@ make api        # http://localhost:8001 · tài liệu tự sinh: /docs
 
 | Endpoint | Việc |
 |---|---|
+| `POST /itinerary` | Form -> tối đa 3 phương án, hoặc câu hỏi nếu còn thiếu ý (`status: need_info`) |
+| `POST /chat/{thread_id}/plan` | Như `/itinerary`, rồi nối form + lộ trình dạng chữ vào hội thoại |
+| `GET/PUT /chat/{thread_id}/trip` | Form chuyến đi đã lọc từ tin nhắn / người dùng xác nhận form |
 | `POST /chat` | Gửi câu hỏi, chờ câu trả lời đầy đủ |
 | `POST /chat/stream` | Như trên nhưng trả lời theo từng mẩu (SSE) |
 | `GET /chat/{thread_id}` | Lịch sử hội thoại |
@@ -95,56 +107,31 @@ Thử nhanh không cần dựng API:
 ```bash
 make chat Q="Đi Đà Lạt 3 ngày nên đi đâu?"   # một câu hỏi
 make chat                                     # chế độ hội thoại
+make itinerary                                # lập lộ trình 1 lần với form mẫu (TỐN QUOTA)
 ```
 
 ## Dùng trong code
 
-```python
-from ailusion import setup_observability, memory_backends, run_config, AgentLog, ToolCache
-
-setup_observability()                 # 1 lần khi app khởi động
-
-async with memory_backends() as (checkpointer, store):
-    graph_a = build_research_graph().compile(checkpointer=checkpointer, store=store)
-    graph_b = build_decision_graph().compile(checkpointer=checkpointer, store=store)
-
-    # Mỗi graph một thread_id (state schema khác nhau), chung session_id để Langfuse gom một chuyến đi.
-    ctx = await graph_a.ainvoke(
-        {"request": text},
-        run_config(thread_id=f"{trip_id}:A", session_id=trip_id, user_id=user_id, graph="research"),
-    )
-    plan = await graph_b.ainvoke(
-        {"context": ctx},
-        run_config(thread_id=f"{trip_id}:B", session_id=trip_id, user_id=user_id, graph="decision"),
-    )
-```
-
-- **What-if**: tìm checkpoint trong `graph.aget_state_history(...)`, `aupdate_state(...)` để đổi ràng buộc,
-  rồi `ainvoke(None, run_config(..., graph="what_if", checkpoint_id=...))`. Mẫu đầy đủ trong
-  `scripts/smoke_graph.py`.
-- **Bộ nhớ dài hạn**: namespace quy ước ở `Namespaces` (`memory/namespaces.py`) —
-  `Namespaces.profile(user_id)`, `.habits(user_id)`, `.knowledge(region)`, `.calibration(tool)`.
-  Cổng lọc ghi vào đây khi hết phiên.
-- **Nhật ký agent**: API bọc mỗi lượt chạy trong `async with AgentLog().turn(thread_id)` (ghi
-  `start`, rồi `done` hoặc `error`); node gọi `await AgentLog().publish(thread_id, node=..., kind=..., text=...)`;
-  endpoint SSE dùng `AgentLog().tail(thread_id, last_id)`: phát một lượt rồi đóng, không có
-  `Last-Event-ID` thì bắt đầu từ lượt gần nhất.
-- **Cache tool**: `@ToolCache().cached("price_availability")` trên hàm tool async; TTL từng tool ở
-  `TOOL_TTL_SECONDS` (`runtime/tool_cache.py`).
-- **Cấu hình**: `get_settings()` trả về `Settings` đã gom nhóm — `settings.redis.url`,
-  `settings.langfuse.base_url`, `settings.postgres.embedding_dims`… Tên biến môi trường vẫn
-  như `.env.example`; xem `config/settings.py` để biết trường nào đọc từ biến nào.
+- **Thêm / sửa một bước của pipeline**: tra bảng ở đầu `itinerary/pipeline.py` xem bước nằm ở
+  file nào. Sửa cách một agent nghĩ thì mở `itinerary/agents/<agent>.py` (prompt, đầu ra, luật
+  kiểm ở cùng một chỗ). Node có dạng
+  `async def ten_node(state, ctx) -> dict`, trả phần state cần cập nhật; gọi tool bằng
+  `ctx.tool` / `ctx.many`, gọi LLM bằng `ctx.ask` (có trần token, không thinking), ghi nhật ký
+  bằng `ctx.log`. Thêm node mới thì nối trong `itinerary/pipeline.py`.
+- **Nhật ký agent**: API bọc mỗi lượt chạy trong `async with AgentLog().turn(thread_id)`; node ghi
+  sự kiện; `GET /chat/{thread_id}/events` phát lại theo SSE.
+- **Cấu hình**: `get_settings()` (`core/settings.py`) — `settings.redis.url`,
+  `settings.llm.chat_model`… Tên biến môi trường như `.env.example`.
 
 ## Redis: bố trí key
 
-Quy ước đặt key nằm hết ở `src/ailusion/redis/keys.py`. Tất cả ở DB 0 (index của Query Engine
+Quy ước đặt key nằm ở `src/ailusion/core/redis.py`. Tất cả ở DB 0 (index của Query Engine
 chỉ chạy trên DB 0), tách bằng tiền tố:
 
 | Tiền tố | Nội dung | Hết hạn |
 |---|---|---|
 | `checkpoint*`, `checkpoint_write*` | LangGraph checkpoint | `CHECKPOINT_TTL_MINUTES`, gia hạn khi đọc |
 | `agentlog:<thread_id>` | Stream nhật ký agent | như checkpoint, tối đa `AGENT_LOG_MAXLEN` bản ghi |
-| `toolcache:<tool>:<hash>` | Kết quả tool | theo `TOOL_TTL_SECONDS` |
 
 `maxmemory-policy noeviction` + AOF: Redis không tự xoá checkpoint khi đầy, dọn dẹp hoàn toàn bằng TTL.
 Xem dữ liệu trực quan: `make up-ui` → http://localhost:5540 (host `redis`, port `6379`).
@@ -152,7 +139,7 @@ Xem dữ liệu trực quan: `make up-ui` → http://localhost:5540 (host `redis
 ## LangSmith và Langfuse cùng lúc
 
 Mỗi lượt chạy gửi trace sang cả hai. Gợi ý phân vai: LangSmith để debug luồng graph khi phát triển,
-Langfuse để theo dõi chi phí / độ trễ theo session và người dùng (đúng ô Langfuse trong sơ đồ).
+Langfuse để theo dõi chi phí / độ trễ theo session và người dùng.
 Khi lên production có thể tắt LangSmith (`LANGSMITH_TRACING=false`) hoặc giảm `LANGFUSE_SAMPLE_RATE`.
 
 ## OSRM (tuỳ chọn)

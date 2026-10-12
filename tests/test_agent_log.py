@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from fakeredis import FakeAsyncRedis
 
-from ailusion.runtime.agent_log import FROM_BEGINNING, TURN_NODE, AgentLog, _previous_id
+from ailusion.core.agent_log import FROM_BEGINNING, TURN_NODE, AgentLog, _previous_id
 
 THREAD = "chat-test"
 
@@ -124,3 +124,11 @@ async def test_latest_turn_found_across_pages(log: AgentLog):
 )
 def test_previous_id(event_id: str, expected: str):
     assert _previous_id(event_id) == expected
+
+
+def test_tail_block_is_shorter_than_the_redis_socket_timeout() -> None:
+    """XREAD BLOCK lâu hơn socket timeout thì client tự ngắt, stream /events chết giữa chừng."""
+    from ailusion.core.agent_log import TAIL_BLOCK_MS
+    from ailusion.core.redis import SOCKET_TIMEOUT_SECONDS
+
+    assert TAIL_BLOCK_MS < SOCKET_TIMEOUT_SECONDS * 1000

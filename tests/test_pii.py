@@ -1,6 +1,6 @@
 from langchain_core.messages import HumanMessage
 
-from ailusion.observability.pii import mask_payload, mask_text
+from ailusion.core.pii import mask_payload, mask_text
 
 
 def test_phone_vn():

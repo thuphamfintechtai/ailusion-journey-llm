@@ -1,0 +1,315 @@
+"""Agent Planner — bước 9: xếp các lịch đi khác nhau cho từng ngày.
+
+Vào: khung giờ từng ngày, danh sách chỗ (mã D/Q, giờ mở cửa, thời gian ở lại, giá), phút đi giữa
+các chỗ. Ra: `PlannerOutput` (≥ 3 lịch mỗi ngày, mỗi lượt tối đa `DAYS_PER_PLANNER_CALL` ngày).
+Planner KHÔNG chấm lịch nào hay hơn — code chạy thử và xếp hạng. Code kiểm (`plan_errors`): chỉ
+dùng mã có trong danh sách, đủ số lịch; sai thì trả sửa 1 lần. Không trả được lịch nào thì
+`fallback_plans` tự ghép mỗi ngày 1 lịch, gắn nhãn dự phòng.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from ..shared.context import Ctx
+from ..shared.form import GROUP_NAMES, PURPOSE_NAMES, hhmm
+from ..shared.llm import OUTPUT_TOKENS
+from ..shared.models import (
+    STAY,
+    DayPlan,
+    ItineraryState,
+    Place,
+    form_of,
+    matrix_of,
+    places_of,
+    plan_to_dict,
+    profile_of,
+    weather_text,
+)
+
+PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du lịch Việt Nam. Bạn xếp các lịch đi khác nhau cho từng ngày. Bạn KHÔNG chấm lịch nào hay hơn: hệ thống tự chạy thử từng lịch theo đồng hồ, đo tiền, phút ngồi xe, số chỗ hợp ý… rồi xếp hạng.
+
+# Quy tắc cứng
+
+1. Chỉ dùng mã chỗ trong danh sách (D… chỗ đi chơi, Q… quán ăn). Không bịa chỗ.
+2. Giờ rời chỗ ở (`leave_stay`) không sớm hơn giờ bắt đầu ngày.
+3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày; không chạm khung bị chặn. Khung "chỉ ăn uống" chỉ được xếp quán Q….
+4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
+5. Mỗi ngày ít nhất 3 lịch, không có 2 lịch giống hệt nhau.
+6. Bữa trưa (11:00–13:30) và bữa tối (18:00–20:00) nằm trong khung giờ thì chèn quán Q… vào đúng chỗ trong `stops`.
+7. Mỗi lịch tối đa 1 chỗ đi chơi của mỗi loại (cột "loại"): không xếp 2 spa, 2 chùa… trong cùng một ngày. Một mã không lặp lại trong cùng một lịch.
+8. Mỗi ngày CHỈ dùng mã trong danh sách của chính ngày đó. Hệ thống đã chia chỗ cho từng ngày (theo giờ mở cửa, gần nhau, khác loại) để các ngày không đi lại chỗ cũ.
+
+# Làm các lịch khác nhau thật sự
+
+Các lịch của một ngày nên khác nhau về kiểu: một lịch ít chỗ, ít ngồi xe; một lịch nhiều chỗ hợp sở thích; một lịch chọn chỗ được đánh giá cao nhất; gom chỗ gần nhau (xem phút đi) để đỡ chạy qua lại.
+"""
+
+
+PLANNER_FIX = """
+
+# Sửa lịch
+
+Hệ thống chạy thử các lịch dưới đây và thấy lỗi. Chỉ trả lại đúng các ngày có lỗi, mỗi ngày đủ ít nhất 3 lịch (giữ lịch không lỗi, sửa hoặc thay lịch lỗi), giữ nguyên mã lịch của lịch được sửa.
+"""
+
+
+DAYS_PER_PLANNER_CALL = 4
+MIN_PLANS_PER_DAY = 3
+
+
+class PlanDraft(BaseModel):
+    id: str = Field(description="Mã lịch, VD 'L1'")
+    leave_stay: str = Field(description="Giờ rời chỗ ở 'HH:MM'")
+    stops: list[str] = Field(description="Mã chỗ theo thứ tự đi, gồm cả quán ăn đúng giờ ăn")
+
+
+class DayDrafts(BaseModel):
+    day: int = Field(ge=1)
+    plans: list[PlanDraft]
+
+
+class PlannerOutput(BaseModel):
+    days: list[DayDrafts]
+
+
+def plan_errors(
+    out: PlannerOutput,
+    codes: set[str],
+    days: dict[int, str],
+    groups: dict[str, str] | None = None,
+    allowed: dict[int, list[str]] | None = None,
+) -> dict[int, list[str]]:
+    """Lỗi theo ngày: mã ngoài danh sách, rời chỗ ở sớm hơn giờ bắt đầu, < 3 lịch, lịch trùng,
+    mã lặp trong một lịch, 2 chỗ chơi cùng loại trong một lịch, mã không thuộc ngày đó.
+
+    `days`: ngày -> giờ bắt đầu ngày ("HH:MM"). `groups`: mã chỗ chơi D… -> loại (Place.group).
+    `allowed`: ngày -> mã được dùng ngày đó (bước 8 chia sẵn); None = mọi mã.
+    """
+    groups = groups or {}
+    errors: dict[int, list[str]] = {}
+    seen_days = {d.day: d for d in out.days}
+    for day, start in days.items():
+        d = seen_days.get(day)
+        errs: list[str] = []
+        if d is None:
+            errors[day] = [f"thiếu ngày {day}"]
+            continue
+        sigs = set()
+        for p in d.plans:
+            bad = [c for c in p.stops if c not in codes]
+            if bad:
+                errs.append(f"{p.id}: mã {', '.join(bad)} không có trong danh sách")
+            if not re.fullmatch(r"\d{2}:\d{2}", p.leave_stay) or p.leave_stay < start:
+                errs.append(f"{p.id}: giờ rời chỗ ở {p.leave_stay} sớm hơn {start}")
+            if not p.stops:
+                errs.append(f"{p.id}: không có chỗ nào")
+            if len(set(p.stops)) < len(p.stops):
+                errs.append(f"{p.id}: một chỗ xuất hiện 2 lần")
+            kinds = [groups[c] for c in p.stops if c in groups]
+            twice = sorted({k for k in kinds if kinds.count(k) > 1})
+            if twice:
+                errs.append(f"{p.id}: 2 chỗ cùng loại {', '.join(twice)} trong một ngày")
+            other = [c for c in p.stops if c in codes and allowed and c not in allowed.get(day, [])]
+            if other:
+                errs.append(f"{p.id}: {', '.join(other)} không thuộc danh sách ngày {day}")
+            sig = tuple(p.stops)
+            if sig in sigs:
+                errs.append(f"{p.id}: trùng hệt một lịch khác")
+            sigs.add(sig)
+        if len(d.plans) < MIN_PLANS_PER_DAY:
+            errs.append(f"chỉ có {len(d.plans)} lịch, cần ít nhất {MIN_PLANS_PER_DAY}")
+        if errs:
+            errors[day] = errs
+    return errors
+
+
+def hours_text(p: Place, day: int) -> str:
+    """Giờ mở cửa một ngày cho Planner: "07:00–11:00 + 13:00–17:00", "đóng cửa", "chưa rõ"."""
+    if day not in p.hours:
+        return "chưa rõ"
+    span = p.hours[day]
+    if span is None:
+        return "đóng cửa"
+    edges = [span[0]] + [t for gap in p.breaks.get(day, []) for t in gap] + [span[1]]
+    return " + ".join(f"{hhmm(a)}–{hhmm(b)}" for a, b in zip(edges[::2], edges[1::2], strict=False))
+
+
+def day_codes_of(state: dict[str, Any]) -> dict[int, list[str]]:
+    """Ngày -> mã chỗ được dùng ngày đó (bước 8 chia sẵn). State cũ chưa chia thì ngày nào cũng
+    dùng toàn bộ danh sách."""
+    days = [d.day for d in profile_of(state).days]
+    split = state.get("day_codes") or {}
+    return {d: split.get(str(d), list(state["codes"])) for d in days}
+
+
+def planner_input(
+    state: dict[str, Any], days: list[int], fix: dict[int, list[str]] | None = None
+) -> str:
+    """Dữ liệu đưa Planner: khung giờ, rồi danh sách chỗ RIÊNG của từng ngày, phút đi."""
+    form, profile, places = form_of(state), profile_of(state), places_of(state)
+    codes = state["codes"]
+    by_day = day_codes_of(state)
+    matrix = matrix_of(state)
+    lines = []
+    shown: set[str] = set()
+    for d in profile.days:
+        if d.day not in days:
+            continue
+        extra = []
+        if d.blocked_slots:
+            extra.append("bị chặn " + ", ".join(d.blocked_slots))
+        if d.meal_only_slots:
+            extra.append("chỉ ăn uống " + ", ".join(d.meal_only_slots))
+        weather = weather_text(state, d.day)
+        lines.append(
+            f"# Ngày {d.day} ({form.day_date(d.day):%d/%m}): {d.day_start}–{d.day_end}, "
+            f"rảnh {d.free_minutes} phút"
+            + (f"; {'; '.join(extra)}" if extra else "")
+            + (f"; {weather}" if weather else "")
+        )
+        lines.append(
+            "Chỗ dùng được ngày này (mã | tên | loại | giờ mở cửa | ở lại | giá/người | "
+            "phút từ chỗ ở):"
+        )
+        for code in by_day[d.day]:
+            p = places[codes[code]]
+            shown.add(code)
+            stay = f"{p.stay_low}–{p.stay_high} phút" if p.stay_low else "chưa rõ"
+            price = f"{p.price:,} đ".replace(",", ".") if p.price is not None else "chưa có giá"
+            from_stay = matrix.get((STAY, p.place_id))
+            lines.append(
+                f"{code} | {p.name} | {p.group} | {hours_text(p, d.day)} | {stay} | {price} | "
+                f"{int(from_stay) if from_stay is not None else '?'} phút"
+                + (" | hợp mục đích" if p.matches_purpose else "")
+            )
+        lines.append("")
+    back = {codes[c]: c for c in shown}
+    pairs = [
+        f"{back[a]}→{back[b]} {int(v)}" for (a, b), v in matrix.items() if a in back and b in back
+    ]
+    if pairs:
+        lines.append("# Phút đi giữa các chỗ\n" + ", ".join(pairs[:400]))
+    lines.append(
+        f"\n# Nhóm khách: {profile.group} {GROUP_NAMES[profile.group]}; mục đích: "
+        + (", ".join(PURPOSE_NAMES[p] for p in profile.purposes) or "chưa rõ")
+    )
+    if fix:
+        lines.append("\n# Lỗi cần sửa")
+        for day, errs in sorted(fix.items()):
+            lines.append(f"Ngày {day}: " + "; ".join(errs))
+    return "\n".join(lines)
+
+
+async def call_planner(
+    ctx: Ctx,
+    state: dict[str, Any],
+    days: list[int],
+    fix: dict[int, list[str]] | None,
+    node: str,
+) -> tuple[PlannerOutput | None, int, list]:
+    system = PLANNER + (PLANNER_FIX if fix else "")
+    tokens = OUTPUT_TOKENS["planner"] + 500 * len(days)
+    human = planner_input(state, days, fix)
+    return await ctx.ask(system, human, PlannerOutput, tokens, node)
+
+
+def visit_groups(state: dict[str, Any]) -> dict[str, str]:
+    """Mã chỗ chơi D… -> loại (Place.group), để kiểm luật 7–8."""
+    places = places_of(state)
+    return {c: places[pid].group for c, pid in state["codes"].items() if c.startswith("D")}
+
+
+def errors_of(plan_id: str, day_errors: list[str]) -> list[str]:
+    """Lỗi của đúng một lịch: lỗi ghi mã lịch đó ("L2: …") và lỗi chung của cả ngày."""
+    return [e for e in day_errors if e.startswith(f"{plan_id}:") or not re.match(r"^\w+: ", e)]
+
+
+def fallback_plans(
+    state: dict[str, Any], days: set[int] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Ngày Planner không trả được lịch nào: mỗi ngày 1 lịch code tự ghép từ danh sách của ngày,
+    gắn nhãn để người dùng biết đây là lịch dự phòng. `days`: chỉ ghép cho các ngày này."""
+    profile, places = profile_of(state), places_of(state)
+    by_day = day_codes_of(state)
+    out = {}
+    used: set[str] = set()
+    for d in profile.days:
+        if days is not None and d.day not in days:
+            continue
+        pids = [state["codes"][c] for c in by_day[d.day]]
+        visits = [pid for pid in pids if places[pid].kind == "visit"]
+        meals = [pid for pid in pids if places[pid].kind == "meal"]
+        # 2 chỗ chơi khác loại trong danh sách của ngày, chưa dùng ở ngày dự phòng khác.
+        take: list[str] = []
+        for pid in visits:
+            if pid not in used and all(places[pid].group != places[t].group for t in take):
+                take.append(pid)
+            if len(take) == 2:
+                break
+        take = take or visits[:1]
+        used.update(take)
+        meal = next((m for m in meals if m not in used), meals[0] if meals else None)
+        if meal:
+            used.add(meal)
+        stops = take[:1] + ([meal] if meal else []) + take[1:]
+        plan = DayPlan(id=f"N{d.day}-D1", day=d.day, leave_stay=d.day_start, stops=stops)
+        plan.unchecked.append("lịch dự phòng do code ghép, Planner không trả được lịch")
+        out[plan.id] = plan_to_dict(plan)
+    return out
+
+
+async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
+    profile = profile_of(state)
+    codes = set(state["codes"])
+    groups = visit_groups(state)
+    allowed = day_codes_of(state)
+    all_days = [d.day for d in profile.days]
+    starts = {d.day: d.day_start for d in profile.days}
+    plans: dict[str, dict[str, Any]] = {}
+    calls_total, usage_total = 0, []
+    for i in range(0, len(all_days), DAYS_PER_PLANNER_CALL):
+        batch = all_days[i : i + DAYS_PER_PLANNER_CALL]
+        await ctx.log("xep_lich", "step", f"Planner xếp lịch ngày {batch[0]}–{batch[-1]}")
+        out, calls, usage = await call_planner(ctx, state, batch, None, "xep_lich")
+        calls_total += calls
+        usage_total += usage
+        if out is None:
+            continue
+        errors = plan_errors(out, codes, {d: starts[d] for d in batch}, groups, allowed)
+        if errors:
+            await ctx.log("xep_lich", "finding", "Lịch sai luật, trả Planner sửa 1 lần")
+            fixed, calls, usage = await call_planner(ctx, state, sorted(errors), errors, "xep_lich")
+            calls_total += calls
+            usage_total += usage
+            if fixed:
+                keep = {d.day: d for d in out.days}
+                keep.update({d.day: d for d in fixed.days if d.day in errors})
+                out = PlannerOutput(days=list(keep.values()))
+        remaining = plan_errors(out, codes, {d: starts[d] for d in batch}, groups, allowed)
+        for d in out.days:
+            if d.day not in starts:
+                continue
+            for p in d.plans:
+                stops = [state["codes"][c] for c in p.stops if c in state["codes"]]
+                if not stops:
+                    continue
+                plan = DayPlan(
+                    id=f"N{d.day}-{p.id}",
+                    day=d.day,
+                    leave_stay=p.leave_stay if len(p.leave_stay) == 5 else starts[d.day],
+                    stops=stops,
+                )
+                own = errors_of(p.id, remaining.get(d.day, []))
+                if own:
+                    plan.unchecked.append("Planner chưa sửa hết lỗi: " + "; ".join(own[:2]))
+                plans[plan.id] = plan_to_dict(plan)
+    # Ngày nào Planner bỏ sót (kể cả sau lượt sửa) thì ghép lịch dự phòng cho riêng ngày đó, để
+    # phương án không mất ngày.
+    missing = set(all_days) - {p["day"] for p in plans.values()}
+    if missing:
+        plans.update(fallback_plans(state, missing))
+    return {"plans": plans, "llm_calls": calls_total, "usage": usage_total}

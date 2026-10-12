@@ -1,4 +1,4 @@
-"""Hỏi agent Gemini từ terminal — cách nhanh nhất để thử luồng mà không cần dựng API.
+"""Hỏi trợ lý chat từ terminal — cách nhanh nhất để thử luồng mà không cần dựng API.
 
     make chat Q="Đi Đà Lạt 3 ngày 2 người lớn 1 bé, ngân sách 15tr thì nên đi đâu?"
     make chat                      # chế độ hội thoại, gõ 'thoát' để dừng
@@ -12,15 +12,11 @@ import asyncio
 import sys
 import uuid
 
-from ailusion import (
-    close_redis,
-    memory_backends,
-    run_config,
-    setup_observability,
-    shutdown_observability,
-)
-from ailusion.graphs import build_chat_graph, stream_reply
-from ailusion.llm import MissingApiKeyError
+from ailusion.chat.graph import build_chat_graph, stream_reply
+from ailusion.core.llm import MissingApiKeyError
+from ailusion.core.memory import memory_backends
+from ailusion.core.redis import close_redis
+from ailusion.core.tracing import run_config, setup_observability, shutdown_observability
 
 
 async def ask(graph, thread_id: str, question: str) -> str:

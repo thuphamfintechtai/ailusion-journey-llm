@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from ailusion.config import Settings
+from ailusion.core.settings import Settings
 
 # (biến môi trường, đường dẫn thuộc tính, giá trị đặt vào, giá trị mong đợi — None = y như đặt vào)
 ENV_TO_FIELD = [

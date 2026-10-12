@@ -31,20 +31,11 @@ health: ## Kiểm tra toàn bộ hạ tầng + key
 api: ## Chạy API cho backend gọi (http://localhost:8001/docs)
 	uv run uvicorn ailusion.api:app --reload --host 0.0.0.0 --port 8001
 
-chat: ## Hỏi agent Gemini từ terminal, vd: make chat Q="Đi Đà Lạt 3 ngày nên đi đâu?"
+chat: ## Hỏi trợ lý chat từ terminal, vd: make chat Q="Đi Đà Lạt 3 ngày nên đi đâu?"
 	uv run python scripts/chat.py $(if $(Q),"$(Q)")
 
-plan: ## Chạy pipeline POST /plan với form mẫu (hoặc F=form.json)
-	uv run python scripts/plan.py $(if $(F),"$(F)")
-
-research: ## Chạy Graph A (nghiên cứu), vd: make research Q="Đà Lạt 3 ngày 2 người lớn 1 bé, 15tr"
-	uv run python scripts/research.py $(if $(Q),"$(Q)")
-
-smoke: ## Chạy graph mini: checkpoint, what-if, store, stream, trace (không gọi LLM)
-	uv run python scripts/smoke_graph.py
-
-smoke-llm: ## Như smoke nhưng có một lượt gọi LLM thật (cần khoá của model đang chọn)
-	uv run python scripts/smoke_graph.py --llm
+itinerary: ## Chạy pipeline lập lộ trình 1 lần với form mẫu (hoặc F=form.json) — TỐN QUOTA LLM + tool
+	uv run python scripts/itinerary.py $(if $(F),"$(F)")
 
 test: ## Unit test
 	uv run pytest -q
