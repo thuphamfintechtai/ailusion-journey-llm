@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ..agents.decision import INTERNAL_PAIR
 from ..shared.context import Ctx
 from ..shared.form import SORT_ORDER, TripForm, money
 from ..shared.math import dominates
@@ -234,8 +235,9 @@ async def xep_hang(state: ItineraryState, ctx: Ctx) -> dict:
     await ctx.log(
         "xep_hang",
         "finding",
-        f"Xếp hạng theo thứ tự nhóm {profile.group}: "
-        + "; ".join(r for v in reasons.values() for r in v[:1]),
+        f"Xếp hạng theo điều nhóm {profile.group} coi trọng: "
+        # Nhật ký hiện cho user xem: "Ngày 1: tiền 400.000 so với …", không lộ mã lịch.
+        + "; ".join(INTERNAL_PAIR.sub(r"Ngày \1:", r) for v in reasons.values() for r in v[:1]),
     )
     return {
         "plans": dump_plans(plans),
