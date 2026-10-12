@@ -46,12 +46,10 @@ async def itinerary(form: TripForm, request: Request) -> ItineraryResponse:
 async def chat_plan(thread_id: str, form: TripForm, request: Request) -> ChatPlanReply:
     """Bấm "Lập lộ trình" trong form của trang chat (`form.thread_id` là mã lượt lập lộ trình).
 
-    Có phương án thì nối form và lộ trình dạng chữ vào hội thoại `thread_id`, để trợ lý nhớ khi
-    user hỏi tiếp. Còn thiếu ý (status need_info) thì chỉ trả câu hỏi, không nối gì.
+    Nối form và kết quả dạng chữ vào hội thoại `thread_id` — lộ trình, hoặc câu hỏi lại khi còn
+    thiếu ý (need_info) — để trợ lý nhớ đã lập / đã hỏi gì khi user nói tiếp.
     """
     plan = await run_itinerary(request.app, form)
-    if plan.status != "ok":
-        return ChatPlanReply(plan=plan, request_text="", reply="")
     asked, answer = request_text(form), itinerary_markdown(plan)
     await request.app.state.graph.aupdate_state(
         {"configurable": {"thread_id": thread_id}},

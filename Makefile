@@ -29,7 +29,7 @@ health: ## Kiểm tra toàn bộ hạ tầng + key
 	uv run python scripts/healthcheck.py
 
 api: ## Chạy API cho backend gọi (http://localhost:8001/docs)
-	uv run uvicorn ailusion.api:app --reload --host 0.0.0.0 --port 8001
+	uv run uvicorn ailusion.api:app --reload --host 127.0.0.1 --port 8001
 
 chat: ## Hỏi trợ lý chat từ terminal, vd: make chat Q="Đi Đà Lạt 3 ngày nên đi đâu?"
 	uv run python scripts/chat.py $(if $(Q),"$(Q)")

@@ -15,29 +15,50 @@ mọi request. Graph lập lộ trình dựng ở request đầu tiên (cần n�
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ailusion.chat.graph import build_chat_graph
 from ailusion.core.agent_log import AgentLog
 from ailusion.core.memory import memory_backends
 from ailusion.core.redis import close_redis
+from ailusion.core.settings import get_settings
 from ailusion.core.tracing import setup_observability, shutdown_observability
 
 from . import chat, itinerary
 
 agent_log = AgentLog()
+logger = logging.getLogger(__name__)
+
+
+async def require_service_key(x_service_key: str | None = Header(default=None)) -> None:
+    """Chỉ backend được gọi: header X-Service-Key phải khớp SERVICE_API_KEY.
+
+    Service này không có đăng nhập người dùng — backend lo việc đó. Không có khoá thì ai biết
+    địa chỉ cũng chat / lập lộ trình được (bỏ qua đăng nhập, tốn tiền LLM).
+    """
+    key = get_settings().service_api_key
+    if key is None:
+        return
+    if not x_service_key or not hmac.compare_digest(x_service_key, key.get_secret_value()):
+        raise HTTPException(status_code=401, detail="Thiếu hoặc sai X-Service-Key")
+
+
+SERVICE_ONLY = [Depends(require_service_key)]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Mở hạ tầng khi service khởi động, đóng gọn khi tắt."""
     setup_observability()
+    if get_settings().service_api_key is None:
+        logger.warning("SERVICE_API_KEY trống: mọi người gọi được service này mà không cần khoá")
     async with memory_backends() as (checkpointer, store):
         app.state.graph = build_chat_graph().compile(checkpointer=checkpointer, store=store)
         app.state.memory = (checkpointer, store)
@@ -55,10 +76,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Backend / frontend ở origin khác gọi được. Siết lại danh sách khi lên production.
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.include_router(chat.router)
-app.include_router(itinerary.router)
+# Không bật CORS: chỉ backend gọi service này (từ server), trình duyệt không gọi thẳng.
+app.include_router(chat.router, dependencies=SERVICE_ONLY)
+app.include_router(itinerary.router, dependencies=SERVICE_ONLY)
 
 
 @app.get("/health")
@@ -66,7 +86,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/chat/{thread_id}/events")
+@app.get("/chat/{thread_id}/events", dependencies=SERVICE_ONLY)
 async def agent_events(
     thread_id: str, last_event_id: str | None = Header(default=None)
 ) -> StreamingResponse:

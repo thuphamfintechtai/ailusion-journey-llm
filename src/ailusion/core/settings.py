@@ -176,6 +176,9 @@ class Settings(BaseSettings):
     model_config = _env()
 
     app_env: str = "development"
+    # Khoá dùng chung với backend: mọi route trừ /health phải gửi header X-Service-Key đúng khoá
+    # này. Bỏ trống thì không kiểm (chỉ dùng khi chạy test / máy không mở cổng ra ngoài).
+    service_api_key: SecretStr | None = Field(default=None, validation_alias="SERVICE_API_KEY")
     # Che PII trước khi gửi trace sang LangSmith / Langfuse (xem observability/pii.py).
     pii_masking: bool = True
 

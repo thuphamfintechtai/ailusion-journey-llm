@@ -116,7 +116,7 @@ async def test_chat_plan_appends_the_plan_to_the_conversation(
         assert history[1]["content"] == body["reply"]
 
 
-async def test_chat_plan_need_info_appends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_chat_plan_need_info_appends_the_questions(monkeypatch: pytest.MonkeyPatch) -> None:
     resp = ItineraryResponse(
         thread_id="p",
         status="need_info",
@@ -141,8 +141,10 @@ async def test_chat_plan_need_info_appends_nothing(monkeypatch: pytest.MonkeyPat
     async with httpx.AsyncClient(transport=transport, base_url="http://llm.test") as client:
         body = (await client.post("/chat/chat-q/plan", json=form)).json()
         assert body["plan"]["status"] == "need_info"
-        assert body["reply"] == ""
-        assert (await client.get("/chat/chat-q")).status_code in (200, 404)
+        # Câu hỏi lại cũng nối vào hội thoại: trợ lý nhớ mình vừa hỏi gì.
+        assert body["reply"].startswith("Mình cần thêm vài thông tin")
+        history = (await client.get("/chat/chat-q")).json()["messages"]
+        assert [m["role"] for m in history] == ["human", "ai"]
 
 
 async def test_reused_thread_id_starts_from_a_clean_state() -> None:
