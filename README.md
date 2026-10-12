@@ -43,6 +43,15 @@ src/ailusion/
 Quy ước: prompt chỉ nằm trong `chat/prompts.py` và `itinerary/agents/*.py` (có test kiểm). Trong
 pipeline lập lộ trình, LLM chỉ đề xuất kèm bằng chứng (câu trích, link); code kiểm rồi mới nhận.
 
+## Tài liệu
+
+| Sơ đồ | Nội dung |
+|---|---|
+| [`docs/plan-pipeline.drawio`](docs/plan-pipeline.drawio) ([ảnh](docs/plan-pipeline.drawio.png)) | Pipeline lập lộ trình 17 bước theo 5 làn: bước nào ở file nào, chỗ nào gọi LLM, nguồn dữ liệu, luật code quan trọng |
+| [`docs/chat-pipeline.drawio`](docs/chat-pipeline.drawio) ([ảnh](docs/chat-pipeline.drawio.png)) | Một câu chat đi qua FE → BE → LLM thế nào, dùng prompt nào, lúc nào form tự mở |
+
+File `.drawio` mở bằng draw.io; ảnh `.drawio.png` có nhúng sơ đồ nên cũng mở lại để sửa được.
+
 ## Yêu cầu
 
 - Docker Desktop hoặc OrbStack (Apple Silicon chạy được, các image đều có bản arm64)
