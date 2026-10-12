@@ -11,6 +11,7 @@ Tên model theo dạng "provider:model" của `init_chat_model`:
 
 from __future__ import annotations
 
+import warnings
 from functools import lru_cache
 
 from langchain.chat_models import init_chat_model
@@ -19,6 +20,15 @@ from langchain_core.language_models import BaseChatModel
 from .settings import get_settings
 
 DEFAULT_CHAT_MODEL = "openai:gpt-4.1-mini"
+
+# Structured output của OpenAI: SDK trả `ParsedChatCompletion[None]` rồi gán model của mình
+# (VD `TripUpdate`) vào `parsed`, nên mỗi lần dump Pydantic cảnh báo "Expected `none`". Kết quả
+# vẫn đúng — chỉ tắt đúng cảnh báo về trường `parsed` này để log khỏi rối, cảnh báo khác giữ nguyên.
+warnings.filterwarnings(
+    "ignore",
+    message=r"(?s)Pydantic serializer warnings:.*field_name='parsed'",
+    category=UserWarning,
+)
 
 # Provider -> (biến môi trường chứa khoá, cách lấy khoá từ Settings)
 _REQUIRED_KEY = {
