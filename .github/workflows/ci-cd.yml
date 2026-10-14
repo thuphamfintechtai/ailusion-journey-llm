@@ -46,9 +46,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Chỉ nhận pull request từ dev
+      - name: Chỉ nhận pull request từ dev vào main
+        if: github.event_name == 'pull_request'
         run: |
-          if [ "${{ github.head_ref }}" != "dev" ]; then
+          if [ "${{ github.head_ref }}" != "dev" ] || [ "${{ github.base_ref }}" != "main" ]; then
             echo "Chỉ nhận pull request từ dev vào main."
             exit 1
           fi
