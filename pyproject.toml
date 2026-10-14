@@ -1,6 +1,6 @@
 [project]
 name = "ailusion-journey-llm"
-version = "0.1.0"
+version = "1.1.0"
 description = "Hệ đa-agent lập kế hoạch du lịch (LangGraph) — hạ tầng"
 readme = "README.md"
 requires-python = ">=3.11"

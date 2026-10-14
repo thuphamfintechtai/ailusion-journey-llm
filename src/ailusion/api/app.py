@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Ailusion Journey LLM",
     description="Trợ lý du lịch: chat + pipeline lập lộ trình, chạy trên LangGraph.",
-    version="0.2.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
