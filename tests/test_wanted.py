@@ -138,3 +138,20 @@ def test_numeric_category_codes_fall_back_to_the_name():
 
     assert kind_of("4004, 4004-2", "Bún Bò Huế Gốc Bún") == "meal"  # mã loại của Vietmap
     assert kind_of("4004, 4004-2", "Bãi Đá Ông Địa") == "visit"
+
+
+def test_foods_written_in_the_needs_note_become_interests():
+    from ailusion.itinerary.agents.intake import add_interests, foods_in_note
+
+    assert foods_in_note("bún bò") == ["bún bò"]
+    assert foods_in_note("muốn ăn hải sản và bánh mì, không ăn cay") == ["hải sản", "bánh mì"]
+    assert foods_in_note("kiêng hải sản; ông đi lại khó") == []
+    form = TripForm(
+        destination="Huế",
+        start_date="2026-10-23",
+        end_date="2026-10-27",
+        group_size=2,
+        budget=20_000_000,
+        needs_note="bún bò",
+    )
+    assert add_interests(form, foods_in_note(form.needs_note)).interests == "bún bò"

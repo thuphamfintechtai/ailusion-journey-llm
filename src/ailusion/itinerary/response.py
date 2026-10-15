@@ -115,6 +115,9 @@ class Item(BaseModel):
     summary: str | None = Field(None, description="Mô tả ngắn chỗ này có gì (≤ 220 ký tự)")
     why: list[str] = Field(default_factory=list, description="Tối đa 3 lý do chọn, code ghép")
     must: bool = Field(False, description="User tự chọn chỗ này (form `must_visits`)")
+    wanted: str | None = Field(
+        None, description='Thứ user nhắc mà chỗ này đáp ứng (VD "bún bò"): web ghi "Theo yêu cầu"'
+    )
     must_time: str | None = Field(
         None, description='Giờ user muốn tới: "HH:MM" | morning | afternoon | evening'
     )
@@ -744,6 +747,7 @@ def _day(
                 why=why_of(p, plan.day, s, first=k == 0, daily_budget=daily_budget),
                 must=p.must,
                 must_time=p.must_time if p.must else None,
+                wanted=p.wanted if not p.must else None,
                 **leg(prev, p.place_id, s.start),
             )
         )
