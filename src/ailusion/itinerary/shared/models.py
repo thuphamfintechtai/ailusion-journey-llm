@@ -60,6 +60,11 @@ class Place:
     match_by: str | None = None
     to_verify: list[str] = field(default_factory=list)
     source: str = ""
+    # User chỉ định chỗ này (form `must_visits`): lộ trình phải có, đúng ngày / giờ nếu có.
+    must: bool = False
+    must_day: int | None = None
+    must_time: str | None = None  # "HH:MM" | morning | afternoon | evening
+    must_name: str | None = None  # tên user gõ, để báo lại
 
     @property
     def text(self) -> str:
@@ -209,6 +214,7 @@ class ItineraryState(TypedDict, total=False):
     pool: list[str]
     codes: dict[str, str]  # mã ngắn -> place_id
     day_codes: dict[str, list[str]]  # ngày -> mã chỗ Planner được dùng ngày đó (bước 8)
+    must_codes: dict[str, list[str]]  # ngày -> mã chỗ user chỉ định, mọi lịch ngày đó phải có
     matrix: dict[str, float]  # "from|to" -> phút
     km_matrix: dict[str, float]  # "from|to" -> km đường đi (cùng lượt distance_matrix)
     plans: dict[str, dict[str, Any]]  # plan_id -> DayPlan dạng dict
@@ -217,6 +223,7 @@ class ItineraryState(TypedDict, total=False):
     trip: dict[str, Any]
     decision: dict[str, Any]
     maps: dict[str, str]
+    paths: dict[str, dict[str, Any]]  # plan_id -> {paths: [polyline], precision} (bước 17)
     llm_calls: Annotated[int, operator.add]
     usage: Annotated[list[dict[str, Any]], operator.add]
     tool_log: Annotated[list[dict[str, Any]], operator.add]

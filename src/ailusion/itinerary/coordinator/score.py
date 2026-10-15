@@ -287,10 +287,19 @@ def split_by_day(
     def fame(p: Place) -> float:
         return 0.5 + 0.5 * math.log1p(p.reviews or 0) / top if top else 1.0
 
-    rest = list(visits)
-    famous = {p.place_id for p in visits[: ANCHOR_POOL * len(days)]}
+    # Chỗ user chọn: có ngày thì vào đúng ngày đó trước và làm mỏ neo của ngày; không ngày thì
+    # được chia trước mọi chỗ khác.
+    pinned = [p for p in visits if p.must and p.must_day in out]
     anchors: list[Place] = []
+    for p in pinned:
+        out[p.must_day].append(p)  # type: ignore[index]
+        anchors.append(p)
+    rest = [p for p in visits if p not in pinned]
+    rest.sort(key=lambda p: not p.must)  # sort ổn định: chỗ user chọn lên đầu, còn lại giữ thứ tự
+    famous = {p.place_id for p in visits[: ANCHOR_POOL * len(days)]}
     for day in days:
+        if out[day]:
+            continue
         open_ = [p for p in rest if is_open(p, day)]
         options = [p for p in open_ if p.place_id in famous] or open_
         if not options:
@@ -305,7 +314,7 @@ def split_by_day(
         rest.remove(anchor)
     per_day = math.ceil(len(visits) / max(1, len(days)))
     for p in rest:
-        open_days = [d for d in days if is_open(p, d)]
+        open_days = [d for d in days if is_open(p, d)] or (list(days) if p.must else [])
         for rule in ("đủ luật", "nới cùng loại", "nới số lượng"):
             fits = [
                 d
@@ -316,6 +325,10 @@ def split_by_day(
             if fits:
                 out[min(fits, key=lambda d: (far(p, d), len(out[d])))].append(p)
                 break
+    pinned_meals = [m for m in meals if m.must and m.must_day in out]
+    for m in pinned_meals:
+        out[m.must_day].append(m)  # type: ignore[index]
+    meals = sorted((m for m in meals if m not in pinned_meals), key=lambda m: not m.must)
     if len(meals) >= 2 * len(days):
         per_meal = math.ceil(len(meals) / len(days))
         taken = {d: 0 for d in days}
@@ -335,10 +348,79 @@ def split_by_day(
     return {d: [p.place_id for p in ps] for d, ps in out.items()}
 
 
+def moved_closed_days(musts: list[Place], days: list[int], form: Any) -> list[str]:
+    """Chỗ user chọn ghim vào ngày nó đóng cửa: dời sang ngày mở cửa gần nhất, báo lại."""
+    notes = []
+    for p in musts:
+        day = p.must_day
+        if day is None or day not in days or p.hours.get(day, "?") is not None:
+            continue
+        open_days = [d for d in days if p.hours.get(d, "?") is not None]
+        if not open_days:
+            continue
+        new = min(open_days, key=lambda d: abs(d - day))
+        notes.append(
+            f"“{p.must_name or p.name}” đóng cửa ngày {day} ({form.day_date(day):%d/%m}), "
+            f"đã chuyển sang ngày {new}."
+        )
+        p.must_day = new
+    return notes
+
+
+# Chỗ ở xa trung tâm điểm đến hơn ngần này thì bỏ (DB / SerpApi có chỗ ở gắn nhầm điểm đến, VD
+# "Sala Hồ Tràm" khi đi Hội An). Số tạm ("tu_dat").
+STAY_MAX_KM = 30
+# Tiền phòng cả chuyến không vượt ngần này phần ngân sách cả chuyến (còn ăn, chơi, đi lại). Số tạm.
+STAY_BUDGET_SHARE = 0.5
+# Tiền phòng cả chuyến nên khoảng ngần này phần ngân sách (phần còn lại cho ăn, chơi, đi lại).
+# Số tạm ("tu_dat"); nên thay bằng tỉ lệ thật từ các chuyến user đã chọn.
+STAY_TARGET_SHARE = 0.35
+
+
+def usable_stays(
+    stays: list[Place], center: Any, form: Any, trip_budget: int | None
+) -> tuple[list[Place], list[str]]:
+    """Chỗ ở được xét: gần trung tâm điểm đến, tiền phòng cả chuyến vừa ngân sách (trừ khi mức chi
+    "không giới hạn"). Bỏ hết thì giữ chỗ rẻ nhất trong số gần trung tâm, kèm ghi chú."""
+    notes: list[str] = []
+    near = [s for s in stays if not center or km(tuple(center), (s.lat, s.lng)) <= STAY_MAX_KM]
+    if len(near) < len(stays):
+        far = [s.name for s in stays if s not in near]
+        notes.append(
+            f"Bỏ {len(far)} chỗ ở cách trung tâm {form.destination} hơn {STAY_MAX_KM} km: "
+            + ", ".join(far[:3])
+        )
+    near = near or stays
+    if not trip_budget or form.spend_style == "unlimited":
+        return near, notes
+    rooms = -(-form.group_size // 2)
+    nights = max(1, form.num_nights)
+    cap = trip_budget * STAY_BUDGET_SHARE
+
+    def total(s: Place) -> float | None:
+        return s.price * nights * rooms if s.price else None
+
+    fits = [s for s in near if total(s) is None or total(s) <= cap]  # type: ignore[operator]
+    if fits:
+        if len(fits) < len(near):
+            notes.append(
+                f"Bỏ {len(near) - len(fits)} chỗ ở có tiền phòng cả chuyến vượt "
+                f"{int(STAY_BUDGET_SHARE * 100)}% ngân sách"
+            )
+        return fits, notes
+    cheapest = min(near, key=lambda s: total(s) or 0)
+    notes.append(
+        f"Không có chỗ ở nào tiền phòng dưới {int(STAY_BUDGET_SHARE * 100)}% ngân sách; "
+        f"chọn chỗ rẻ nhất: {cheapest.name}"
+    )
+    return [cheapest], notes
+
+
 async def cham(state: ItineraryState, ctx: Ctx) -> dict:
     form, profile, places = form_of(state), profile_of(state), places_of(state)
     stays = stays_of(state)
     await ctx.log("cham", "step", "Chấm sao tin được, thời gian ở lại; chọn chỗ ở")
+    notes = list(state.get("notes") or [])
     # Thời gian ở lại từ Google cho chỗ đáng xét nhất (tốn quota, giới hạn MAX_DETAILS).
     top = sorted(
         (p for p in places.values() if p.kind == "visit"),
@@ -377,9 +459,9 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
             lng=lng,
         )
     elif stays:
-        candidates = sorted(stays.values(), key=lambda s: -(s.rating_floor or 0))[
-            :MAX_STAYS_COMPARED
-        ]
+        usable, stay_notes = usable_stays(list(stays.values()), center, form, profile.trip_budget)
+        notes += stay_notes
+        candidates = sorted(usable, key=lambda s: -(s.rating_floor or 0))[:MAX_STAYS_COMPARED]
         visits = [p for p in top] or [p for p in places.values() if p.kind == "visit"][:10]
         ride: dict[str, float | None] = {}
         if visits:
@@ -416,6 +498,16 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
             "P4": lambda s: ride.get(s.name) or 10**9,
         }[profile.group]
         chosen_stay = sorted(first, key=key)[0]
+        # Có ngân sách: lấy chỗ ở có tiền phòng cả chuyến gần `STAY_TARGET_SHARE` ngân sách nhất
+        # (trong số đã qua `usable_stays`), để cả chuyến bám ngân sách chứ không rẻ quá / đắt quá.
+        budget = profile.trip_budget
+        priced = [x for x in candidates if x.price]
+        if budget and form.spend_style != "unlimited" and priced:
+            target = budget * STAY_TARGET_SHARE
+            nights = max(1, form.num_nights)
+            chosen_stay = min(
+                priced, key=lambda x: (abs(x.price * nights * rooms - target), key(x))
+            )
     await ctx.log(
         "cham",
         "finding",
@@ -424,6 +516,7 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
     return {
         "places": dump_places(places),
         "stay": place_to_dict(chosen_stay) if chosen_stay else None,
+        "notes": notes,
         "tool_log": logs,
     }
 
@@ -444,9 +537,12 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     for p in ordered_visits:
         per[p.group] = per.get(p.group, 0) + 1
         (first if per[p.group] <= type_cap(p.group, len(profile.days)) else rest).append(p)
-    ordered_visits = first + rest
-    # Mỗi chuỗi quán 1 chi nhánh; đa dạng loại món trước khi cắt bớt.
-    ordered_meals = varied_meals(one_per_brand(meals, center))
+    ordered_visits = [p for p in first + rest if p.must] + [p for p in first + rest if not p.must]
+    # Mỗi chuỗi quán 1 chi nhánh; đa dạng loại món trước khi cắt bớt. Quán user chọn luôn giữ,
+    # chi nhánh khác cùng chuỗi thì bỏ.
+    must_meals = [m for m in meals if m.must]
+    others = [m for m in meals if not m.must and not any(same_brand(m, k) for k in must_meals)]
+    ordered_meals = must_meals + varied_meals(one_per_brand(others, center))
     # Ít nhất 2 quán riêng mỗi ngày (bước chia ngày cần vậy mới không phải dùng chung quán).
     n_meal_slots = max(
         sum(1 + (to_minutes(d.day_end) >= 19 * 60) for d in profile.days), 2 * len(profile.days)
@@ -488,15 +584,18 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         median([float(p.stay_low) for p in shortlist if p.kind == "visit" and p.stay_low]) or 60.0
     )
     caps = capacity(profile.days, typical_stay, typical_hop)
+    musts = [p for p in shortlist if p.must]
+    notes += moved_closed_days(musts, [d.day for d in profile.days], form)
     pool, tiers = pick_pool(
-        [p for p in shortlist if p.kind == "visit"],
-        [p for p in shortlist if p.kind == "meal"],
+        [p for p in shortlist if p.kind == "visit" and not p.must],
+        [p for p in shortlist if p.kind == "meal" and not p.must],
         # Mỗi ngày thêm 2 chỗ dư để Planner có lựa chọn khi xếp 3 lịch khác nhau.
         sum(caps) + 2 * len(profile.days),
         n_meal_slots,
         center,
         per_group=len(profile.days),
     )
+    pool = musts + pool
     # Đặt mã theo độ nổi tiếng (số review giảm dần): Planner hay chọn các mã đầu danh sách, nên
     # chỗ nổi tiếng (Cầu Vàng, Bà Nà…) đứng trước spa / quán nhỏ có sao cao nhưng ít người biết.
     pool = sorted(pool, key=lambda p: (p.kind == "meal", -(p.reviews or 0)))
@@ -507,6 +606,8 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     code_of = {pid: c for c, pid in codes.items()}
     by_day = split_by_day(pool, [d.day for d in profile.days], matrix, form.travel_mode)
     day_codes = {str(d): [code_of[pid] for pid in pids] for d, pids in by_day.items()}
+    # Chỗ user chọn nằm ở ngày nào thì mọi lịch của ngày đó phải có.
+    must_codes = {d: [c for c in cs if places[codes[c]].must] for d, cs in day_codes.items()}
     await ctx.log(
         "chot_danh_sach",
         "finding",
@@ -523,6 +624,8 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         "pool": [p.place_id for p in pool],
         "codes": codes,
         "day_codes": day_codes,
+        "must_codes": {d: cs for d, cs in must_codes.items() if cs},
+        "places": dump_places(places),  # ngày ghim có thể đã dời (`moved_closed_days`)
         "matrix": matrix,
         "km_matrix": km_matrix,
         "notes": notes,

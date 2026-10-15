@@ -46,3 +46,27 @@ def test_group_type_is_kept_across_turns() -> None:
     later = TripInfo(budget_million=6)  # lượt sau không nhắc lại "2 vợ chồng"
     merged = merge(first, later)
     assert merged.group_type == "couple" and merged.budget_million == 6
+
+
+def test_named_places_are_cleaned_and_kept_across_turns() -> None:
+    from ailusion.chat.graph import form_text
+    from ailusion.chat.trip_info import merge
+
+    info = TripInfo.model_validate(
+        {
+            "days": 3,
+            "must_visits": [
+                {"name": " Bà Nà Hills ", "day": 5, "time": "sáng"},  # ngày, giờ sai: bỏ trống
+                {"name": "bà nà hills"},  # trùng tên
+                {"name": "Bếp Hên", "day": 2, "time": "19:00"},
+                {"name": "  "},
+            ],
+        }
+    ).cleaned()
+    assert [(m.name, m.day, m.time) for m in info.must_visits] == [
+        ("Bà Nà Hills", None, None),
+        ("Bếp Hên", 2, "19:00"),
+    ]
+    later = merge(info, TripInfo(budget_million=8))
+    assert [m.name for m in later.must_visits] == ["Bà Nà Hills", "Bếp Hên"]
+    assert "Địa điểm muốn đi: Bà Nà Hills, Bếp Hên (ngày 2, 19:00)" in form_text(later)

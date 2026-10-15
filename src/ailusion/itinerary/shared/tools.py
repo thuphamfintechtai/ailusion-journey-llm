@@ -28,6 +28,7 @@ FOOD_WORDS = (
     "mì",
     "street food",
     "food",
+    "restaurant",
 )
 
 
@@ -69,10 +70,12 @@ def _price(raw: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
     return None, None, None
 
 
-def add_places(pool: dict[str, Place], result: Any, source: str) -> None:
-    """Gộp kết quả browse_places / find_places_by_needs / search_places / find_nearby.
+def add_places(pool: dict[str, Place], result: Any, source: str, any_kind: bool = False) -> None:
+    """Gộp kết quả find_places / search_places / find_nearby.
 
     Cùng place_id thì gộp; nhu cầu "unknown" lần này được thay bằng giá trị biết ở lần khác.
+    `any_kind`: giữ cả chỗ thường bị bỏ (chỗ ở, công ty du lịch…) dưới dạng chỗ chơi — dùng khi
+    user tự gọi tên chỗ muốn đi.
     """
     if not tool_ok(result):
         return
@@ -83,10 +86,15 @@ def add_places(pool: dict[str, Place], result: Any, source: str) -> None:
         lng = raw.get("lng") if raw.get("lng") is not None else gps.get("longitude")
         if not pid or lat is None or lng is None:
             continue
-        category = nfc(raw.get("category") or raw.get("type"))
+        # Vietmap (find_nearby) trả `categories` là danh sách mã loại.
+        category = nfc(
+            raw.get("category") or raw.get("type") or ", ".join(raw.get("categories") or [])
+        )
         kind = kind_of(category, nfc(raw.get("name")))
         if kind is None or kind == "stay":
-            continue
+            if not any_kind:
+                continue
+            kind = "visit"
         price, price_low, price_high = _price(raw)
         if pid in pool:
             place = pool[pid]

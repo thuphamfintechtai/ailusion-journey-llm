@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..shared.context import Ctx
-from ..shared.form import GROUP_NAMES, PURPOSE_NAMES, hhmm
+from ..shared.form import GROUP_NAMES, MUST_LATE_MAX, PURPOSE_NAMES, hhmm, must_time_text
 from ..shared.llm import OUTPUT_TOKENS
 from ..shared.models import (
     STAY,
@@ -44,11 +44,17 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 7. Mỗi lịch tối đa 1 chỗ đi chơi của mỗi loại (cột "loại"): không xếp 2 spa, 2 chùa… trong cùng một ngày. Một mã không lặp lại trong cùng một lịch.
 8. Mỗi ngày CHỈ dùng mã trong danh sách của chính ngày đó. Hệ thống đã chia chỗ cho từng ngày (theo giờ mở cửa, gần nhau, khác loại) để các ngày không đi lại chỗ cũ.
 9. Chỗ ghi "đi buổi tối" (chợ đêm, phố đi bộ, bar, mở cửa từ chiều muộn) xếp cuối ngày, quanh bữa tối; không tới trước giờ mở cửa rồi đứng chờ (chờ quá 45 phút là lỗi).
+10. Chỗ ghi "BẮT BUỘC" là chỗ user tự chọn: MỌI lịch của ngày đó phải có. Có ghi "user muốn tới …" thì xếp các chỗ khác trước / sau sao cho tới đúng giờ đó (giờ cụ thể: không trễ quá {must_late} phút; buổi: bắt đầu trong buổi đó); tới sớm thì là thời gian tự do, nên xếp thêm chỗ khác / bữa tối trước nó cho đỡ phí thời gian.
+
+11. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày nên có mức tiền khác nhau quanh con số đó (một lịch thấp hơn, một lịch sát, một lịch cao hơn một chút), để hệ thống ghép được cả chuyến sát ngân sách user đưa. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
 
 # Làm các lịch khác nhau thật sự
 
 Các lịch của một ngày nên khác nhau về kiểu: một lịch ít chỗ, ít ngồi xe; một lịch nhiều chỗ hợp sở thích; một lịch chọn chỗ được đánh giá cao nhất; gom chỗ gần nhau (xem phút đi) để đỡ chạy qua lại.
 """
+
+
+PLANNER = PLANNER.replace("{must_late}", str(MUST_LATE_MAX))
 
 
 PLANNER_FIX = """
@@ -84,12 +90,14 @@ def plan_errors(
     days: dict[int, str],
     groups: dict[str, str] | None = None,
     allowed: dict[int, list[str]] | None = None,
+    required: dict[int, list[str]] | None = None,
 ) -> dict[int, list[str]]:
     """Lỗi theo ngày: mã ngoài danh sách, rời chỗ ở sớm hơn giờ bắt đầu, < 3 lịch, lịch trùng,
     mã lặp trong một lịch, 2 chỗ chơi cùng loại trong một lịch, mã không thuộc ngày đó.
 
     `days`: ngày -> giờ bắt đầu ngày ("HH:MM"). `groups`: mã chỗ chơi D… -> loại (Place.group).
     `allowed`: ngày -> mã được dùng ngày đó (bước 8 chia sẵn); None = mọi mã.
+    `required`: ngày -> mã chỗ user chọn, mọi lịch ngày đó phải có.
     """
     groups = groups or {}
     errors: dict[int, list[str]] = {}
@@ -118,6 +126,9 @@ def plan_errors(
             other = [c for c in p.stops if c in codes and allowed and c not in allowed.get(day, [])]
             if other:
                 errs.append(f"{p.id}: {', '.join(other)} không thuộc danh sách ngày {day}")
+            lacking = [c for c in (required or {}).get(day, []) if c not in p.stops]
+            if lacking:
+                errs.append(f"{p.id}: thiếu chỗ BẮT BUỘC {', '.join(lacking)}")
             sig = tuple(p.stops)
             if sig in sigs:
                 errs.append(f"{p.id}: trùng hệt một lịch khác")
@@ -138,6 +149,39 @@ def hours_text(p: Place, day: int) -> str:
         return "đóng cửa"
     edges = [span[0]] + [t for gap in p.breaks.get(day, []) for t in gap] + [span[1]]
     return " + ".join(f"{hhmm(a)}–{hhmm(b)}" for a, b in zip(edges[::2], edges[1::2], strict=False))
+
+
+# = simulate.EXTRA_MID (số giữa của phát sinh 10–15%); không import để tránh vòng import.
+_EXTRA_MID = 0.125
+
+
+def day_target(state: dict[str, Any]) -> int | None:
+    """Tiền nên tiêu mỗi ngày cho cả đoàn (vé, ăn, đi lại; chưa gồm chỗ ở và phát sinh): phần
+    ngân sách còn lại sau tiền phòng, chia đều số ngày. Không có ngân sách / mức chi "không giới
+    hạn" thì None."""
+    form, profile = form_of(state), profile_of(state)
+    if not profile.trip_budget or form.spend_style == "unlimited":
+        return None
+    stay = state.get("stay") or {}
+    rooms = -(-form.group_size // 2)
+    stay_total = (stay.get("price") or 0) * form.num_nights * rooms if not form.stay_booked else 0
+    rest = (
+        profile.trip_budget / (1 + _EXTRA_MID) - stay_total - form.prepaid_tickets * form.group_size
+    )
+    return int(round(max(0.0, rest) / form.num_days / 1000) * 1000) or None
+
+
+def must_codes_of(state: dict[str, Any]) -> dict[int, list[str]]:
+    """Ngày -> mã chỗ user chọn mà mọi lịch ngày đó phải có (bước 8)."""
+    return {int(d): list(cs) for d, cs in (state.get("must_codes") or {}).items()}
+
+
+def must_text(p: Place) -> str:
+    """Nhãn chỗ user chọn cho Planner: " | BẮT BUỘC | user muốn tới lúc 19:00"."""
+    if not p.must:
+        return ""
+    when = must_time_text(p.must_time)
+    return " | BẮT BUỘC" + (f" | user muốn tới {when}" if when else "")
 
 
 def day_codes_of(state: dict[str, Any]) -> dict[int, list[str]]:
@@ -207,6 +251,7 @@ def planner_input(
                 f"{int(from_stay) if from_stay is not None else '?'} phút"
                 + (" | hợp mục đích" if p.matches_purpose else "")
                 + (" | đi buổi tối" if p.kind != "meal" and opens_late(p, d.day) else "")
+                + must_text(p)
             )
         pairs = day_pairs(by_day[d.day], codes, matrix)
         if pairs:
@@ -216,6 +261,13 @@ def planner_input(
         f"\n# Nhóm khách: {profile.group} {GROUP_NAMES[profile.group]}; mục đích: "
         + (", ".join(PURPOSE_NAMES[p] for p in profile.purposes) or "chưa rõ")
     )
+    per_day = day_target(state)
+    if per_day:
+        lines.append(
+            f"# Tiêu khoảng {per_day:,} đ mỗi ngày cho cả đoàn (vé + ăn + đi lại, chưa gồm chỗ ở)".replace(
+                ",", "."
+            )
+        )
     if fix:
         lines.append("\n# Lỗi cần sửa")
         for day, errs in sorted(fix.items()):
@@ -262,19 +314,24 @@ def fallback_plans(
         pids = [state["codes"][c] for c in by_day[d.day]]
         visits = [pid for pid in pids if places[pid].kind == "visit"]
         meals = [pid for pid in pids if places[pid].kind == "meal"]
-        # 2 chỗ chơi khác loại trong danh sách của ngày, chưa dùng ở ngày dự phòng khác.
-        take: list[str] = []
+        # Chỗ user chọn luôn có; thêm cho đủ 2 chỗ chơi khác loại, chưa dùng ở ngày dự phòng khác.
+        take: list[str] = [pid for pid in visits if places[pid].must]
         for pid in visits:
-            if pid not in used and all(places[pid].group != places[t].group for t in take):
-                take.append(pid)
-            if len(take) == 2:
+            if len(take) >= 2:
                 break
+            if (
+                pid not in used
+                and pid not in take
+                and all(places[pid].group != places[t].group for t in take)
+            ):
+                take.append(pid)
         take = take or visits[:1]
         used.update(take)
+        must_meals = [m for m in meals if places[m].must]
         meal = next((m for m in meals if m not in used), meals[0] if meals else None)
-        if meal:
-            used.add(meal)
-        stops = take[:1] + ([meal] if meal else []) + take[1:]
+        chosen = must_meals or ([meal] if meal else [])
+        used.update(chosen)
+        stops = take[:1] + chosen + take[1:]
         plan = DayPlan(id=f"N{d.day}-D1", day=d.day, leave_stay=d.day_start, stops=stops)
         plan.unchecked.append("lịch dự phòng do code ghép, Planner không trả được lịch")
         out[plan.id] = plan_to_dict(plan)
@@ -286,6 +343,7 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
     codes = set(state["codes"])
     groups = visit_groups(state)
     allowed = day_codes_of(state)
+    required = must_codes_of(state)
     all_days = [d.day for d in profile.days]
     starts = {d.day: d.day_start for d in profile.days}
     plans: dict[str, dict[str, Any]] = {}
@@ -298,7 +356,7 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
         usage_total += usage
         if out is None:
             continue
-        errors = plan_errors(out, codes, {d: starts[d] for d in batch}, groups, allowed)
+        errors = plan_errors(out, codes, {d: starts[d] for d in batch}, groups, allowed, required)
         if errors:
             await ctx.log("xep_lich", "finding", "Lịch sai luật, trả Planner sửa 1 lần")
             fixed, calls, usage = await call_planner(ctx, state, sorted(errors), errors, "xep_lich")
@@ -308,7 +366,9 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
                 keep = {d.day: d for d in out.days}
                 keep.update({d.day: d for d in fixed.days if d.day in errors})
                 out = PlannerOutput(days=list(keep.values()))
-        remaining = plan_errors(out, codes, {d: starts[d] for d in batch}, groups, allowed)
+        remaining = plan_errors(
+            out, codes, {d: starts[d] for d in batch}, groups, allowed, required
+        )
         for d in out.days:
             if d.day not in starts:
                 continue

@@ -12,12 +12,14 @@
   có chi phí phát sinh và tổng thấp/cao) và cả chuyến (`Option.cost_breakdown` = tổng các ngày),
   hành lý (`packing`).
 - `tra_ket_qua` (node bước 17): gọi `get_place_photos` 1 lượt cho các chỗ trong phương án còn
-  thiếu ảnh; tool hỏng thì vẫn trả kết quả, chỉ thiếu ảnh.
+  thiếu ảnh; `get_route` cho từng lịch trong phương án để bản đồ vẽ theo đường phố thật
+  (`Day.route_paths`). Tool hỏng thì vẫn trả kết quả, chỉ thiếu ảnh / bản đồ nối thẳng.
 - `request_text` / `itinerary_markdown`: form và lộ trình dạng chữ để nối vào hội thoại chat.
 """
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from typing import Any, Literal
@@ -34,6 +36,7 @@ from .shared.form import (
     TripForm,
     hhmm,
     money,
+    must_time_text,
     to_minutes,
 )
 from .shared.llm import cost_usd
@@ -56,7 +59,7 @@ from .shared.models import (
     profile_of,
     weather_text,
 )
-from .shared.tools import add_photos, nfc
+from .shared.tools import add_photos, nfc, tool_ok
 from .tabs import (
     RAIN_PCT,
     SEATS_PER_VEHICLE,
@@ -111,6 +114,10 @@ class Item(BaseModel):
     image: str | None = Field(None, description="Link ảnh đại diện; None = chưa có ảnh")
     summary: str | None = Field(None, description="Mô tả ngắn chỗ này có gì (≤ 220 ký tự)")
     why: list[str] = Field(default_factory=list, description="Tối đa 3 lý do chọn, code ghép")
+    must: bool = Field(False, description="User tự chọn chỗ này (form `must_visits`)")
+    must_time: str | None = Field(
+        None, description='Giờ user muốn tới: "HH:MM" | morning | afternoon | evening'
+    )
     travel_mode: str | None = Field(None, description="Phương tiện chặng tới đây (id form)")
     travel_km: float | None = Field(None, description="Km chặng từ điểm trước tới đây")
     travel_cost: int | None = Field(
@@ -189,6 +196,12 @@ class Day(BaseModel):
     items: list[Item]
     weather: str | None = None
     maps_url: str | None = None
+    route_paths: list[str] = Field(
+        default_factory=list,
+        description="Đường xe chạy thật cả ngày (chỗ ở → các chỗ → chỗ ở), polyline mã hoá kiểu "
+        "Google theo `route_precision`, nối tiếp nhau; trống = bản đồ nối thẳng các điểm",
+    )
+    route_precision: int = Field(5, description="Số chữ số thập phân của polyline")
     area_note: str | None = Field(
         None, description="Một câu về vùng đi của ngày: bán kính, xa nhất"
     )
@@ -714,6 +727,8 @@ def _day(
                 image=p.thumbnail,
                 summary=short_summary(p.summary),
                 why=why_of(p, plan.day, s, first=k == 0, daily_budget=daily_budget),
+                must=p.must,
+                must_time=p.must_time if p.must else None,
                 **leg(prev, p.place_id, s.start),
             )
         )
@@ -745,6 +760,8 @@ def _day(
         items=items,
         weather=weather_text(state, plan.day),
         maps_url=(state.get("maps") or {}).get(plan.id),
+        route_paths=((state.get("paths") or {}).get(plan.id) or {}).get("paths") or [],
+        route_precision=((state.get("paths") or {}).get(plan.id) or {}).get("precision") or 5,
         area_note=area_note([places[s.place_id] for s in run.stops], state, matrix or {}),
         lunar=str(to_lunar(date)),
         holiday=holiday_of(date, state.get("festival_dates")),
@@ -860,6 +877,10 @@ def why_of(
     """Tối đa 3 lý do chọn chỗ này, ghép từ số đã tính (không gọi LLM), theo thứ tự: hợp mục
     đích, sao tin được, gần điểm trước, giá so với ngân sách, giờ mở cửa vừa lúc ghé."""
     out = []
+    if p.must:
+        when = must_time_text(p.must_time)
+        free = f" (tới sớm, tự do {stop.wait} phút)" if p.must_time and stop.wait else ""
+        out.append("Bạn chọn chỗ này" + (f", muốn tới {when}" if when else "") + free)
     if reason := purpose_reason(p):
         out.append(reason)
     if p.rating is not None and (p.rating_floor or 0) >= TRUSTED_FLOOR:
@@ -919,9 +940,74 @@ def area_note(
 
 
 async def tra_ket_qua(state: ItineraryState, ctx: Ctx) -> dict:
-    out = await fill_photos(state, ctx)
+    photos, paths = await asyncio.gather(fill_photos(state, ctx), fill_paths(state, ctx))
+    out = {**photos, **{k: v for k, v in paths.items() if k != "tool_log"}}
+    out["tool_log"] = (photos.get("tool_log") or []) + (paths.get("tool_log") or [])
     await ctx.log("tra_ket_qua", "answer", "Trả 3 phương án")
     return out
+
+
+MAX_ROUTE_POINTS = 10  # = giới hạn số điểm mỗi lượt của tool get_route (MCP `_TOI_DA_DIEM`)
+
+
+def route_chunks(points: list[str]) -> list[list[str]]:
+    """Chia dãy điểm thành các đoạn ≤ `MAX_ROUTE_POINTS` điểm; đoạn sau bắt đầu ở điểm cuối của
+    đoạn trước để đường vẽ liền mạch."""
+    out: list[list[str]] = []
+    i = 0
+    while i < len(points) - 1:
+        chunk = points[i : i + MAX_ROUTE_POINTS]
+        out.append(chunk)
+        i += len(chunk) - 1
+    return out
+
+
+async def fill_paths(state: dict[str, Any], ctx: Ctx) -> dict[str, Any]:
+    """Đường xe chạy thật (Vietmap) cho mỗi lịch nằm trong phương án: chỗ ở → các chỗ theo thứ
+    tự → chỗ ở. Lịch dùng chung giữa các phương án chỉ gọi 1 lần. Không có toạ độ chỗ ở hoặc
+    tool hỏng thì bỏ qua: bản đồ nối thẳng các điểm như trước."""
+    stay = state.get("stay") or {}
+    if stay.get("lat") is None or stay.get("lng") is None:
+        return {}
+    places, plans = places_of(state), state.get("plans") or {}
+    home = f"{stay['lat']},{stay['lng']}"
+    wanted = list(
+        dict.fromkeys(
+            pid for o in (state.get("trip") or {}).get("options") or [] for pid in o["days"]
+        )
+    )
+    calls, owners = [], []
+    for pid in wanted:
+        stops = [s for s in (plans.get(pid) or {}).get("stops") or [] if s in places]
+        if not stops:
+            continue
+        points = [home, *(f"{places[s].lat},{places[s].lng}" for s in stops), home]
+        for chunk in route_chunks(points):
+            calls.append(
+                (
+                    "get_route",
+                    {"points": chunk, "vehicle": form_of(state).vehicle, "include_path": True},
+                )
+            )
+            owners.append(pid)
+    if not calls:
+        return {}
+    results, logs = await ctx.many(calls)
+    paths: dict[str, dict[str, Any]] = {}
+    broken: set[str] = set()
+    for pid, data in zip(owners, results, strict=True):
+        path = data.get("path") if tool_ok(data) else None
+        if not isinstance(path, str) or not path:
+            broken.add(pid)
+            continue
+        entry = paths.setdefault(pid, {"paths": [], "precision": data.get("path_precision") or 5})
+        entry["paths"].append(path)
+    # Thiếu 1 đoạn thì bỏ cả lịch đó: vẽ nửa đường thật nửa đường thẳng dễ hiểu nhầm.
+    paths = {pid: v for pid, v in paths.items() if pid not in broken}
+    await ctx.log(
+        "tra_ket_qua", "finding", f"Đường đi thật cho {len(paths)}/{len(wanted)} lịch trên bản đồ"
+    )
+    return {"paths": paths, "tool_log": logs}
 
 
 async def fill_photos(state: dict[str, Any], ctx: Ctx) -> dict[str, Any]:
@@ -974,6 +1060,14 @@ def request_text(form: TripForm) -> str:
         lines.append(f"Ngân sách {_money(form.budget)} {unit}.")
     if form.purposes:
         lines.append("Mục đích: " + ", ".join(PURPOSE_NAMES[p] for p in form.purposes) + ".")
+    if form.must_visits:
+        musts = []
+        for m in form.must_visits:
+            when = ", ".join(
+                x for x in (f"ngày {m.day}" if m.day else "", must_time_text(m.time) or "") if x
+            )
+            musts.append(m.name + (f" ({when})" if when else ""))
+        lines.append("Muốn đi: " + "; ".join(musts) + ".")
     if form.message.strip():
         lines.append(f"Lời nhắn: {form.message.strip()}")
     return "\n".join(lines)

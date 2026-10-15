@@ -25,6 +25,7 @@ from ..shared.form import (
     HUB_TRAVEL_MIN,
     LOW_BUDGET_RATIO,
     LOW_FREE_MINUTES,
+    MUST_EVENING_STAY,
     PRIORITY_GROUP,
     SORT_ORDER,
     TABLE_A,
@@ -115,6 +116,17 @@ def profile_trip(
                     departure = DEFAULT_DEPARTURE
                     day_guess.append(f"Ngày {d} về lúc {DEFAULT_DEPARTURE}")
                 end = min(end, to_minutes(departure) - CHECKIN_MIN - DEPARTURE_BUFFER_MIN - hub)
+        # Chỗ user hẹn giờ cụ thể buổi tối (VD Cầu Rồng 21:00): giờ về là số tạm thì nới cho kịp
+        # ở đó `MUST_EVENING_STAY` phút rồi về. Ngày cuối có giờ ra bến thì không nới.
+        if not form.night_return_time and not form.night_out and d != form.num_days:
+            late = [
+                to_minutes(m.time) + MUST_EVENING_STAY
+                for m in form.must_visits
+                if m.day == d and m.time and m.time[0].isdigit()
+            ]
+            if late and max(late) > end:
+                end = min(max(late), 23 * 60 + 30)
+                day_guess.append(f"Ngày {d} về muộn hơn ({hhmm(end)}) cho kịp giờ bạn hẹn")
         blocked, meal_only = [], []
         busy_minutes = 0
         for slot in form.busy_slots:
@@ -279,7 +291,7 @@ async def phan_nhom(state: ItineraryState, ctx: Ctx) -> dict:
                 {"destination": form.destination, "sort_by": "popular", "limit": 20},
             ),
             (
-                "browse_places",
+                "find_places",
                 {"destination": form.destination, "category": "Nhà hàng", "limit": 30},
             ),
         ]

@@ -45,7 +45,7 @@ from .prompts import (
     STATE_OPEN_FORM_MISSING,
     TRIP_STATE,
 )
-from .trip_info import REQUIRED, TripInfo, update_trip_info
+from .trip_info import REQUIRED, ChatMustVisit, TripInfo, update_trip_info
 from .trip_store import TripDraft, load_draft, missing_labels, save_draft
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,12 @@ def trip_context(draft: TripDraft, *, open_form: bool) -> str:
     )
 
 
+def must_text(m: ChatMustVisit) -> str:
+    """ "Bếp Hên (ngày 2, 19:00)" """
+    when = ", ".join(x for x in (f"ngày {m.day}" if m.day else "", m.time or "") if x)
+    return m.name + (f" ({when})" if when else "")
+
+
 def form_text(info: TripInfo) -> str:
     """Form dạng gạch đầu dòng tiếng Việt, mục trống ghi "(chưa có)"."""
 
@@ -190,6 +196,7 @@ def form_text(info: TripInfo) -> str:
         f"- Sở thích: {show(info.interests)}",
         f"- Phương tiện: {show(info.transport)}",
         f"- Nhịp độ: {show(info.pace)}",
+        f"- Địa điểm muốn đi: {show([must_text(m) for m in info.must_visits])}",
     ]
     return "\n".join(lines)
 

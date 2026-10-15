@@ -102,6 +102,9 @@ def merge_duplicates(places: dict[str, Place]) -> list[str]:
         if twin:
             removed.append(f"{p.name} (trùng {twin.name})")
             twin.thumbnail = twin.thumbnail or p.thumbnail
+            if p.must and not twin.must:  # chỗ user chọn: giữ dấu trên bản còn lại
+                twin.must, twin.must_day = True, p.must_day
+                twin.must_time, twin.must_name = p.must_time, p.must_name
             del places[p.place_id]
         else:
             kept.append(p)
@@ -130,8 +133,9 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
     half = MAX_HOURS_PLACES // 2
     by_rating = sorted(places.values(), key=lambda p: -(p.rating_floor or 0))
     by_fame = sorted(places.values(), key=lambda p: -(p.reviews or 0))
-    candidates = list({p.place_id: p for p in by_rating[:half] + by_fame}.values())[
-        :MAX_HOURS_PLACES
+    musts = [p for p in places.values() if p.must]
+    candidates = list({p.place_id: p for p in musts + by_rating[:half] + by_fame}.values())[
+        : MAX_HOURS_PLACES + len(musts)
     ]
     ids = [p.place_id for p in candidates]
     calls = []
@@ -186,7 +190,13 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
             reason = "cửa hàng, chuyến đi không có mục đích mua sắm"
         elif center and km(center, (p.lat, p.lng)) > MAX_KM_FROM_CENTER:
             reason = f"cách trung tâm {form.destination} hơn {MAX_KM_FROM_CENTER} km"
+        if reason and p.must and not reason.startswith("đóng cửa"):
+            # User tự chọn: vẫn giữ, chỉ nhắc điều cần biết.
+            p.to_verify.append(f"Bạn chọn chỗ này dù {reason}")
+            reason = None
         if reason:
+            if p.must:
+                notes.append(f"Không xếp được “{p.must_name or p.name}”: {reason}.")
             removed.append(f"{p.name}: {reason}")
             del places[pid]
             continue

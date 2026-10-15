@@ -3,16 +3,21 @@
 Toàn bộ là code, không cộng trọng số tự đặt:
 - Bước 13 (`mark_beaten`): gắn nhãn lịch kém hơn mọi mặt so với một lịch khác cùng ngày.
 - Bước 14 (`rank`): xếp như từ điển theo thứ tự nhóm khách coi trọng (`SORT_ORDER`).
-- Bước 15 (`assemble`): PA1 = hạng 1 mọi ngày, PA2/PA3 = đổi ngày có lịch hạng 2 gần nhất; kiểm
-  ngân sách theo mức chi — vượt thì `ask_user`, máy không tự cắt.
+- Bước 15 (`assemble`): có ngân sách thì ghép lịch các ngày sao cho tổng ước (vé, ăn, đi lại,
+  chỗ ở, phát sinh — đúng cách màn hình tính) nằm trong ±`BUDGET_BAND` ngân sách, các ngày tiêu đều
+  nhau (ngày lên thì ngày khác xuống), rồi mới tới hạng theo nhóm khách (`fit_budget`). Không có
+  ngân sách / thiếu giá: PA1 = hạng 1 mọi ngày, PA2/PA3 = hạng 2, 3. Không vừa ±5% thì ghi rõ thiếu
+  / vượt bao nhiêu; vượt thì `ask_user` theo mức chi, máy không tự cắt.
 """
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
 from ..agents.decision import INTERNAL_PAIR
+from ..coordinator.simulate import EXTRA_MID
 from ..shared.context import Ctx
 from ..shared.form import SORT_ORDER, TripForm, money
 from ..shared.math import dominates
@@ -114,6 +119,79 @@ def stay_cost(stay: Place | None, form: TripForm) -> int | None:
     return stay.price * form.num_nights * rooms if stay.price else None
 
 
+BUDGET_BAND = 0.05  # tổng ước lệch ngân sách tối đa ±5% (user yêu cầu)
+CANDIDATES_PER_DAY = 5  # số lịch tốt nhất mỗi ngày đem ghép (5^7 = 78k tổ hợp cho 7 ngày)
+
+
+def trip_estimate(days: list[DayPlan], s_cost: int | None, form: TripForm) -> int | None:
+    """Tổng ước cả chuyến, cả đoàn: (tiền các ngày + chỗ ở) × (1 + phát sinh) + vé đã mua."""
+    spends = [p.metrics.get("spend") for p in days]
+    if s_cost is None or any(v is None for v in spends):
+        return None
+    core = sum(spends) + s_cost  # type: ignore[arg-type]
+    return int(round(core * (1 + EXTRA_MID) / 1000) * 1000) + form.prepaid_tickets * form.group_size
+
+
+def fit_budget(
+    ranked: dict[int, list[DayPlan]],
+    s_cost: int | None,
+    form: TripForm,
+    budget: int,
+    places_kind: dict[str, str],
+    want: int = 3,
+) -> list[tuple[list[DayPlan], int]]:
+    """Tối đa `want` tổ hợp lịch (mỗi ngày 1 lịch) sát ngân sách nhất. Thứ tự so: ít chỗ chơi lặp
+    giữa các ngày → tổng lệch ngân sách ngoài ±5% ít nhất → các ngày tiêu đều (lệch so với phần
+    chia đều ngoài ±5% ít nhất) → tổng hạng các lịch nhỏ nhất (điều nhóm khách coi trọng)."""
+    days = sorted(ranked)
+    cand: dict[int, list[DayPlan]] = {}
+    for d in days:
+        ok = [p for p in ranked[d] if p.status != "fail" and p.metrics.get("spend") is not None]
+        if not ok:
+            return []
+        cand[d] = ok[:CANDIDATES_PER_DAY]
+    fixed = (s_cost or 0) + form.prepaid_tickets * form.group_size / (1 + EXTRA_MID)
+    per_day = (budget / (1 + EXTRA_MID) - fixed) / len(days)
+    scored = []
+    for combo in itertools.product(*(cand[d] for d in days)):
+        total = trip_estimate(list(combo), s_cost, form)
+        if total is None:
+            continue
+        seen: set[str] = set()
+        repeats = 0
+        for p in combo:
+            repeats += sum(s in seen and places_kind.get(s) != "meal" for s in p.stops)
+            seen |= set(p.stops)
+        off = max(0.0, abs(total - budget) / budget - BUDGET_BAND)
+        spread = (
+            max(abs(p.metrics["spend"] - per_day) for p in combo) / per_day  # type: ignore[operator]
+            if per_day > 0
+            else 0.0
+        )
+        ranks = sum(cand[d].index(p) for d, p in zip(days, combo, strict=True))
+        key = (repeats, round(off, 3), round(max(0.0, spread - BUDGET_BAND), 2), ranks)
+        scored.append((key, list(combo), total))
+    scored.sort(key=lambda t: t[0])
+    return [(combo, total) for _key, combo, total in scored[:want]]
+
+
+def budget_note(estimate: int | None, budget: int | None) -> str | None:
+    """Tổng ước không vừa ±5% ngân sách: nói rõ lệch bao nhiêu (vượt thì bước 15 hỏi user)."""
+    if estimate is None or not budget:
+        return None
+    gap = estimate - budget
+    if abs(gap) <= budget * BUDGET_BAND:
+        return None
+    pct = round(abs(gap) / budget * 100)
+    if gap < 0:
+        return (
+            f"Lộ trình ước khoảng {money(estimate)}, thấp hơn ngân sách {money(budget)} "
+            f"khoảng {pct}%: điểm đến chưa đủ chỗ đúng nhu cầu để dùng hết ngân sách. Có thể nâng "
+            "chỗ ở, thêm ngày hoặc thêm hoạt động có phí."
+        )
+    return f"Lộ trình ước khoảng {money(estimate)}, vượt ngân sách {money(budget)} khoảng {pct}%."
+
+
 def assemble(
     ranked: dict[int, list[DayPlan]],
     stay: Place | None,
@@ -130,7 +208,19 @@ def assemble(
     places_kind = places_kind or {}
     s_cost = stay_cost(stay, form)
     options = []
-    for k in range(3):
+    budget = profile.trip_budget
+    fitted = (
+        fit_budget(ranked, s_cost, form, budget, places_kind)
+        if budget and form.spend_style != "unlimited"
+        else []
+    )
+    for k, (days_fit, est) in enumerate(fitted):
+        day_costs = [p.metrics.get("cost") for p in days_fit]
+        total = None
+        if all(c is not None for c in day_costs) and s_cost is not None:
+            total = int(sum(day_costs) + s_cost + form.prepaid_tickets * form.group_size)  # type: ignore[arg-type]
+        options.append({"id": f"PA{k + 1}", "days": days_fit, "total_cost": total, "estimate": est})
+    for k in range(0 if not fitted else 3, 3):
         days: list[DayPlan] = []
         visited: set[str] = set()
         for _day, plans in sorted(ranked.items()):
@@ -153,7 +243,14 @@ def assemble(
         total = None
         if all(c is not None for c in day_costs) and s_cost is not None:
             total = int(sum(day_costs) + s_cost + form.prepaid_tickets * form.group_size)  # type: ignore[arg-type]
-        options.append({"id": f"PA{k + 1}", "days": days, "total_cost": total})
+        options.append(
+            {
+                "id": f"PA{k + 1}",
+                "days": days,
+                "total_cost": total,
+                "estimate": trip_estimate(days, s_cost, form),
+            }
+        )
 
     # Bỏ phương án trùng hệt phương án trước (ngày nào cũng chỉ có 1 lịch đi được).
     unique, seen = [], set()
@@ -163,13 +260,15 @@ def assemble(
             seen.add(sig)
             unique.append(o)
 
-    budget = profile.trip_budget
     ask = None
     best = unique[0]
+    measured = best["estimate"] if best.get("estimate") is not None else best["total_cost"]
+    limit = budget * (1 + BUDGET_BAND) if budget is not None and best.get("estimate") else budget
     if (
         budget is not None
-        and best["total_cost"] is not None
-        and best["total_cost"] > budget
+        and measured is not None
+        and limit is not None
+        and measured > limit
         and form.spend_style != "unlimited"
     ):
         cheapest_days = []
@@ -179,12 +278,19 @@ def assemble(
                 min(ok, key=lambda p: p.metrics["cost"]) if ok else best["days"][day - 1]
             )
         ask = {
-            "over": best["total_cost"] - budget,
+            "over": measured - budget,
             "spend_style": form.spend_style,
             "cheaper_first": profile.group == "P1",
             "cheaper_days": [p.id for p in cheapest_days],
         }
-    return {"options": unique, "stay_cost": s_cost, "trip_budget": budget, "ask_user": ask}
+    note = budget_note(best.get("estimate"), budget) if form.spend_style != "unlimited" else None
+    return {
+        "options": unique,
+        "stay_cost": s_cost,
+        "trip_budget": budget,
+        "ask_user": ask,
+        "budget_note": note,
+    }
 
 
 def better_at(options: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -260,6 +366,7 @@ async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
                 "id": o["id"],
                 "days": [p.id for p in o["days"]],
                 "total_cost": o["total_cost"],
+                "estimate": o.get("estimate"),
                 "better_at": labels[o["id"]],
             }
             for o in trip["options"]
@@ -268,10 +375,18 @@ async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
         "trip_budget": trip["trip_budget"],
         "ask_user": trip["ask_user"],
     }
-    text = " · ".join(f"{o['id']} {money(o['total_cost'])}" for o in serial["options"])
+    text = " · ".join(
+        f"{o['id']} ~{money(o['estimate'] if o.get('estimate') is not None else o['total_cost'])}"
+        for o in serial["options"]
+    )
+    if trip["trip_budget"]:
+        text += f" (ngân sách {money(trip['trip_budget'])}, cho phép ±{int(BUDGET_BAND * 100)}%)"
     await ctx.log(
         "ghep",
         "finding",
         text + (" · vượt ngân sách, hỏi user" if trip["ask_user"] else ""),
     )
-    return {"trip": serial}
+    notes = list(state.get("notes") or [])
+    if trip["budget_note"]:
+        notes.append(trip["budget_note"])
+    return {"trip": serial, "notes": notes}
