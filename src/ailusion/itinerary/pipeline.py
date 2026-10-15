@@ -9,14 +9,20 @@ Mỗi bước do một làn làm, giống trang thiết kế (C = Coordinator, c
     4     hoi_lai           C            coordinator/profile.py  còn thiếu ý -> dừng, hỏi user
     5     tim_kiem          C            coordinator/search.py
     6     loc               C            coordinator/filter.py
-    6a/b  xac_minh          Experience   agents/experience.py    (C gửi 2 agent song song,
-                            Budget       agents/budget.py         coordinator/filter.py)
-    7–8   cham, chot_danh_sach  C        coordinator/score.py    (chia ngày theo cụm gần nhau)
-    9     xep_lich          Planner      agents/planner.py
-    10–11 kiem_lich         C            coordinator/simulate.py (sắp lại thứ tự cho ít ngồi
+    7     cham              C            coordinator/score.py    (chọn chỗ ở)
+    8     chot_nhanh        C            coordinator/branches.py 3 nhánh song song, mỗi nhánh chốt
+          · chot_danh_sach  C            coordinator/score.py    danh sách (chia ngày theo cụm gần)
+    6a/b  xac_minh          Experience   agents/experience.py    (C gửi 2 agent song song, chỉ các
+                            Budget       agents/budget.py         chỗ 3 nhánh sắp đưa Planner)
+    9–14  lap_phuong_an     C            coordinator/branches.py 3 nhánh song song, mỗi nhánh 1
+                                                                  phương án với chỗ ưu tiên riêng:
+          · xep_lich        Planner      agents/planner.py
+          · kiem_lich       C            coordinator/simulate.py (sắp lại thứ tự cho ít ngồi
                                                                   xe, đặt quán ăn; lệch ->
                                                                   Planner sửa 1 lần)
-    12–15 xep_hang, ghep    C            coordinator/rank.py
+          · xep_hang        C            coordinator/rank.py     rồi chọn phương án (ít trùng
+                                                                  chỗ với phương án trước)
+    15    ghep              C            coordinator/rank.py
     16    quyet_dinh        Decision     agents/decision.py
     17    tra_ket_qua       C            response.py             (ảnh: get_place_photos 1 lượt)
 
@@ -24,8 +30,9 @@ Mỗi node là `async def ten_node(state, ctx) -> dict` (phần state cần cậ
 (shared/context.py) gọi tool, gọi LLM, ghi nhật ký; state (shared/models.py) là dict thuần để
 checkpointer lưu được.
 
-LLM chỉ chạy ở 5 agent, thường 2–5 lượt mỗi lộ trình: Intake (0–1), Experience (0–1),
-Budget (0–1), Planner (1 mỗi 4 ngày, +1 sửa), Decision (1, +1 sửa). Mọi thứ khác là code.
+LLM chỉ chạy ở 5 agent, thường 5–10 lượt mỗi lộ trình: Intake (0–1), Experience (0–1),
+Budget (0–1), Planner (1 mỗi 4 ngày mỗi nhánh, +1 sửa; 3 nhánh chạy song song), Decision (1, +1
+sửa). Mọi thứ khác là code.
 """
 
 from __future__ import annotations
@@ -39,13 +46,12 @@ from langgraph.graph import END, START, StateGraph
 
 from .agents.decision import quyet_dinh
 from .agents.intake import doc_loi_nhan
-from .agents.planner import xep_lich
+from .coordinator.branches import chot_nhanh, lap_phuong_an
 from .coordinator.filter import loc, xac_minh
 from .coordinator.profile import after_profile, hoi_lai, nhan_form, phan_nhom
-from .coordinator.rank import ghep, xep_hang
-from .coordinator.score import cham, chot_danh_sach
+from .coordinator.rank import ghep
+from .coordinator.score import cham
 from .coordinator.search import tim_kiem
-from .coordinator.simulate import kiem_lich
 from .response import tra_ket_qua
 from .shared.context import Ctx
 from .shared.models import ItineraryState
@@ -57,12 +63,10 @@ Node = Callable[[ItineraryState, Ctx], Awaitable[dict[str, Any]]]
 MAIN_FLOW: list[Node] = [
     tim_kiem,
     loc,
-    xac_minh,
     cham,
-    chot_danh_sach,
-    xep_lich,
-    kiem_lich,
-    xep_hang,
+    chot_nhanh,
+    xac_minh,
+    lap_phuong_an,
     ghep,
     quyet_dinh,
     tra_ket_qua,

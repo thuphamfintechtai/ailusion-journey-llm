@@ -216,13 +216,20 @@ def test_same_name_prefers_the_reachable_place_near_the_city() -> None:
     assert best_match("Bà Nà Hills", [peak, tiny], center).place_id == "peak"  # type: ignore[union-attr]
 
 
-def test_no_early_return_rule_unless_the_user_sets_one() -> None:
+def test_evening_return_is_asked_and_defaults_to_20h() -> None:
+    from ailusion.itinerary.coordinator.profile import QUESTIONS
+
     form = _form(must_visits=[{"name": "Cầu Rồng", "day": 1, "time": "21:00"}])
     profile = profile_trip(form, [], [])
-    assert profile.days[0].day_end == "23:30" and profile.days[1].day_end == "23:30"
-    assert not any(
-        "về" in g and "trước" in g for g in profile.guess
-    )  # không "đang giả định về sớm"
+    # Không nhập giờ về tối: bước 4 hỏi (H6); chưa trả lời thì tạm về lúc 20:00.
+    assert "H6" in profile.questions
+    assert profile.days[1].day_end == "20:45"  # đi chơi tới 20:00 + 45 phút đường về
+    # Ngày 1 hẹn Cầu Rồng lúc 21:00: kéo tới sau giờ hẹn (21:00 + 90 phút), không thành "về trễ".
+    assert profile.days[0].day_end == "22:30"
+    unsure = dict(QUESTIONS["H6"]["choices"])["Chưa biết (để 20h)"]
+    assert unsure == {"night_return_time": "20:45"}
+    late = profile_trip(_form(night_out=True), [], [])
+    assert "H6" not in late.questions and late.days[0].day_end == "23:30"
     own = _form(night_return_time="21:00", must_visits=[{"name": "x", "day": 1, "time": "21:00"}])
     assert profile_trip(own, [], []).days[0].day_end == "21:00"  # user tự đặt giờ về: giữ
 
@@ -266,3 +273,21 @@ def test_vietmap_is_tried_before_serpapi_for_named_places() -> None:
     assert [n for n, _ in ctx.calls] == ["find_places", "find_nearby"]  # không gọi SerpApi
     near = ctx.calls[1][1]
     assert near["lat"] == 16.05 and near["radius_m"] == 50_000
+
+
+def test_every_group_choice_is_accepted_without_asking_again() -> None:
+    from ailusion.itinerary.coordinator.profile import QUESTIONS
+
+    base = {"night_return_time": "21:45"}
+    # Ô "Đi cùng ai" trên form (5 lựa chọn): chọn rồi thì không hỏi lại H1, kể cả "Gia đình" để
+    # trống số trẻ em / người lớn tuổi.
+    for group in ("solo", "couple", "friends", "colleagues", "family"):
+        p = profile_trip(_form(group_type=group, **base), [], [])
+        assert "H1" not in p.questions, group
+    # Câu hỏi lại H1: mọi lựa chọn đều trả lời xong câu hỏi, có lựa chọn gia đình toàn người lớn.
+    choices = dict(QUESTIONS["H1"]["choices"])
+    assert choices["Gia đình (người lớn)"] == {"group_type": "family"}
+    for label, answer in choices.items():
+        p = profile_trip(_form(**{"group_type": None, **base, **answer}), [], [])
+        assert "H1" not in p.questions, label
+    assert "H1" in profile_trip(_form(group_type=None, **base), [], []).questions

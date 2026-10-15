@@ -43,12 +43,17 @@ def nfc(text: Any) -> str:
 
 
 def kind_of(category: str, name: str) -> str | None:
+    """Theo loại Google ghi trước; chỉ khi không có loại mới đoán theo tên. Tên dễ nhầm: "Chùa
+    Quán Thế Âm" có chữ "quán", "Bảo tàng Hải sản" có chữ "hải sản" — loại của chúng là chùa,
+    bảo tàng nên là chỗ chơi."""
     text = nfc(f" {category} {name} ").lower()
     if any(w in text for w in SKIP_WORDS):
         return None
-    if any(w in text for w in STAY_WORDS):
+    # Loại chỉ là mã số (Vietmap trả "4004, 4004-2") thì coi như không có loại: đoán theo tên.
+    words = nfc(f" {category} ").lower() if re.search(r"[^\W\d_]", category) else text
+    if any(w in words for w in STAY_WORDS):
         return "stay"
-    if any(w in text for w in FOOD_WORDS):
+    if any(w in words for w in FOOD_WORDS):
         return "meal"
     return "visit"
 

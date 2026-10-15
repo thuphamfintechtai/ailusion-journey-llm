@@ -20,11 +20,15 @@ from ..shared.form import (
     DEFAULT_NIGHT_RETURN,
     DEFAULT_WAKE,
     DEPARTURE_BUFFER_MIN,
+    EVENING_RIDE_BACK,
     GROUP_NAMES,
     HUB_EXIT_MIN,
     HUB_TRAVEL_MIN,
-    LOW_BUDGET_RATIO,
     LOW_FREE_MINUTES,
+    MUST_EVENING_STAY,
+    NAP_IF_END_FROM,
+    NAP_IF_START_BY,
+    NAP_MIN,
     PRIORITY_GROUP,
     SORT_ORDER,
     TABLE_A,
@@ -32,6 +36,7 @@ from ..shared.form import (
     clock,
     daily_budget,
     hhmm,
+    must_window,
     to_minutes,
     trip_budget,
 )
@@ -100,6 +105,13 @@ def profile_trip(
         else:
             start = to_minutes(wake)
         end = to_minutes(night_return) if not form.night_out else 23 * 60 + 30
+        # Giờ về là giờ mặc định (user chưa nhập) mà user hẹn tới một chỗ lúc tối muộn hơn: kéo
+        # ngày tới sau giờ hẹn đó, không thì chính chỗ user chọn thành "về quá giờ".
+        if not form.night_return_time and not form.night_out:
+            for m in form.must_visits:
+                span = must_window(m.time) if m.day in (None, d) else None
+                if span and span[0] >= end - MUST_EVENING_STAY:
+                    end = max(end, min(23 * 60 + 30, span[0] + MUST_EVENING_STAY))
         if d == form.num_days:
             if form.checkin_close_time:
                 end = min(end, to_minutes(form.checkin_close_time) - hub)
@@ -124,7 +136,12 @@ def profile_trip(
             else:
                 meal_only.append(f"{hhmm(b_start)}–{hhmm(end)}")
                 busy_minutes += max(0, end - b_start)
-        free = max(0, end - start - busy_minutes)
+        nap = (
+            form.nap != "none"
+            and start <= to_minutes(NAP_IF_START_BY)
+            and end >= to_minutes(NAP_IF_END_FROM)
+        )
+        free = max(0, end - start - busy_minutes - (NAP_MIN if nap else 0))
         days.append(
             DayWindow(
                 day=d,
@@ -132,6 +149,8 @@ def profile_trip(
                 day_end=hhmm(max(start, end)),
                 blocked_slots=blocked,
                 meal_only_slots=meal_only,
+                nap=nap,
+                nap_at=form.nap,
                 free_minutes=free,
                 guess=day_guess,
             )
@@ -155,8 +174,8 @@ def profile_trip(
         group, rule = "P4", "B1"
     elif needs_care:
         group, rule = "P2", "B2"
-    elif per_day is not None and base is not None and per_day < LOW_BUDGET_RATIO * base:
-        group, rule = "P1", "B3"
+    # B3 (ngân sách thấp -> "tiết kiệm") đã bỏ: có ngân sách thì bước ghép bám ±5% ngân sách;
+    # xếp nhóm tiết kiệm thì lịch rẻ lên đầu, cả chuyến tiêu thấp hơn ngân sách cả 35%.
     else:
         group, rule = "P3", "B4"
 
@@ -190,6 +209,7 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             ["Cặp đôi", {"group_type": "couple"}],
             ["Bạn bè", {"group_type": "friends"}],
             ["Đồng nghiệp", {"group_type": "colleagues"}],
+            ["Gia đình (người lớn)", {"group_type": "family"}],
             ["Gia đình có trẻ nhỏ", {"group_type": "family", "kids_under_6": 1}],
             ["Có người lớn tuổi", {"group_type": "family", "seniors_65": 1}],
         ],
@@ -215,6 +235,19 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             ["Trên 10 triệu", {"budget": 15_000_000, "budget_unit": "group_trip"}],
         ],
     },
+    "H6": {
+        "text": "Buổi tối bạn thường đi chơi tới mấy giờ rồi mới về chỗ ở?",
+        "field": "night_return_time",
+        # Đi chơi tới H giờ -> về tới chỗ ở trước H giờ + EVENING_RIDE_BACK phút (đường về).
+        "choices": [
+            [f"Khoảng {h}h", {"night_return_time": f"{h}:{EVENING_RIDE_BACK:02d}"}]
+            for h in (19, 20, 21, 22)
+        ]
+        + [
+            ["Đi khuya, sau 23h", {"night_out": True}],
+            ["Chưa biết (để 20h)", {"night_return_time": DEFAULT_NIGHT_RETURN}],
+        ],
+    },
     "H2": {
         "text": "Chuyến này bạn muốn làm gì?",
         "field": "purposes",
@@ -236,10 +269,10 @@ MAX_QUESTIONS = 3
 def questions_for(form: TripForm, profile: TripProfile) -> list[str]:
     """Mã câu hỏi còn thiếu, theo thứ tự ưu tiên của bước 4, tối đa 3 câu."""
     out = []
-    family_without_ages = form.group_type == "family" and not (
-        form.kids_under_6 or form.kids_6_12 or form.seniors_65
-    )
-    if form.group_type is None or family_without_ages:
+    # Chỉ hỏi khi chưa biết đi cùng ai. "Gia đình" mà không có trẻ em / người lớn tuổi là gia đình
+    # toàn người lớn: form đã có ô số trẻ em, người lớn tuổi (để 0 = không có), hỏi lại thì user
+    # chọn "Gia đình" xong vẫn bị hỏi "đi cùng ai".
+    if form.group_type is None:
         out.append("H1")
     if any(not s.busy_start for s in form.busy_slots):
         out.append("H5")
@@ -249,6 +282,9 @@ def questions_for(form: TripForm, profile: TripProfile) -> list[str]:
         out.append("H3")
     if form.num_days >= 3 and not form.purposes and not form.interests.strip():
         out.append("H2")
+    # Buổi tối đi tới mấy giờ: không đoán, hỏi user (chọn "chưa biết" thì 20:00).
+    if not form.night_return_time and not form.night_out:
+        out.append("H6")
     return out[:MAX_QUESTIONS]
 
 

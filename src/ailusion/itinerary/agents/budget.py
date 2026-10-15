@@ -26,7 +26,9 @@ BUDGET = """Bạn là Agent Budget trong hệ thống lập lộ trình du lịc
 """
 
 
-MAX_PRICE_FINDS = 5
+# Chỗ chơi Agent Budget tìm giá mỗi lộ trình (trong các chỗ 3 nhánh sắp đưa Planner, đang dùng
+# giá ước): mỗi chỗ 1 lượt web_search + 1 fetch_page và ~1k token trong 1 lượt LLM.
+MAX_PRICE_FINDS = 10
 
 
 class PriceFind(BaseModel):

@@ -36,6 +36,7 @@ INTAKE_TEMPLATE = """Bạn đọc lời nhắn tự do của người dùng tron
 - `spend_style`: normal · unlimited ("không ngại chi thêm") · luxury_within_budget ("sang nhưng không vượt")
 - `arrival_time`, `departure_time`, `wake_time`, `night_return_time`: giờ như user viết, hoặc morning / afternoon / evening
 - `night_out`: true / false
+- `nap`: nghỉ trưa ở đâu — stay (về khách sạn / chỗ ở nghỉ trưa) · cafe ("nghỉ trưa ở quán cà phê", "ngồi cà phê cho mát") · hotel ("thuê phòng nghỉ trưa", "khách sạn gần đó") · none ("không cần nghỉ trưa", "đi xuyên trưa")
 - `walking_level`: M1 (dạo 1–2 tiếng) · M2 (3 tiếng có dốc) · M3 (4–5 tiếng leo dốc) · M4 (cả ngày)
 - `budget`: số tiền như user viết; `budget_unit`: group_trip (cả đoàn cả chuyến) · person_trip (mỗi người cả chuyến) · person_day (mỗi người mỗi ngày)
 - `busy_slots`: lịch bận — ngày thứ mấy của chuyến, giờ bắt đầu, giờ xong, kèm câu trích. User không nói giờ (VD "ngày 2 có việc") thì để trống giờ, hệ thống sẽ hỏi lại
@@ -69,6 +70,7 @@ ALLOWED: dict[str, tuple[str, ...] | None] = {
     "wake_time": None,
     "night_return_time": None,
     "night_out": ("true", "false"),
+    "nap": ("stay", "cafe", "hotel", "none"),
     "walking_level": ("M1", "M2", "M3", "M4", "M5"),
     "budget": None,
     "budget_unit": ("group_trip", "person_trip", "person_day"),
@@ -318,6 +320,7 @@ ALL_FILLABLE = (
     "wake_time",
     "night_return_time",
     "night_out",
+    "nap",
     "walking_level",
     "budget",
     "busy_slots",

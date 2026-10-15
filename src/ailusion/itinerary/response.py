@@ -94,7 +94,7 @@ class TravelAlt(BaseModel):
 
 
 class Item(BaseModel):
-    type: Literal["start", "visit", "meal", "back"]
+    type: Literal["start", "visit", "meal", "rest", "back"]
     start: str
     end: str
     name: str
@@ -333,7 +333,9 @@ class PackItem(BaseModel):
 
 
 class ItineraryResponse(BaseModel):
+    # Mã để tìm trace khi debug: Langfuse session = thread_id, LangSmith run gốc = trace_run_id.
     thread_id: str
+    trace_run_id: str | None = None
     status: Literal["ok", "need_info"]
     destination: str
     start_date: str
@@ -538,9 +540,22 @@ def day_cost(
         return sum(getattr(i, field) or 0 for i in items if i.type in kinds)
 
     tickets, food = add(("visit",), "price"), add(("meal",), "price")
+    # Nghỉ trưa ở quán cà phê: tiền nước vào ăn uống; nghỉ theo giờ ở khách sạn: vào chỗ ở.
+    nap = [i for i in items if i.type == "rest" and i.price]
+    nap_cafe = sum(i.price or 0 for i in nap if "ly" in (i.price_by or ""))
+    nap_room = sum(i.price or 0 for i in nap) - nap_cafe
+    food, night = food + nap_cafe, night + nap_room
     transport = sum(i.travel_cost or 0 for i in items)
-    low = add(("visit", "meal"), "price_min") + sum(i.travel_cost_min or 0 for i in items)
-    high = add(("visit", "meal"), "price_max") + sum(i.travel_cost_max or 0 for i in items)
+    low = (
+        add(("visit", "meal"), "price_min")
+        + nap_cafe  # phòng nghỉ trưa đã nằm trong `night`
+        + sum(i.travel_cost_min or 0 for i in items)
+    )
+    high = (
+        add(("visit", "meal"), "price_max")
+        + nap_cafe  # phòng nghỉ trưa đã nằm trong `night`
+        + sum(i.travel_cost_max or 0 for i in items)
+    )
     # Tự lái: cộng tiền thuê xe trong ngày (không có thì tiền xăng mỗi chặng trông rẻ ảo).
     rent = rental_of(form.travel_mode, form.group_size) if form else None
     r_low, r_high, r_note = rent if rent else (0, 0, None)
@@ -733,6 +748,41 @@ def _day(
             )
         )
         prev = p.place_id
+        if run.rest and run.rest[0] == k:
+            _k, arrive, leave, at = run.rest
+            spot = places.get(at)
+            if spot is None:  # về chỗ ở
+                rest = Item(
+                    type="rest",
+                    start=hhmm(arrive),
+                    end=hhmm(leave),
+                    name=f"Nghỉ trưa tại {stay_name}",
+                    travel_min=int(arrive - s.leave),
+                    **leg(prev, STAY, arrive),
+                )
+            else:  # quán cà phê / khách sạn gần quán trưa
+                pos[at] = (spot.lat, spot.lng)
+                rest = Item(
+                    type="rest",
+                    start=hhmm(arrive),
+                    end=hhmm(leave),
+                    name=f"Nghỉ trưa tại {spot.name}",
+                    place_id=spot.place_id,
+                    category=spot.category,
+                    lat=spot.lat,
+                    lng=spot.lng,
+                    price=spot.price * form.group_size if spot.price else None,
+                    price_by="ước: 1 ly mỗi người"
+                    if spot.rest_of == "cafe"
+                    else "ước: nghỉ theo giờ ~ nửa giá phòng",
+                    rating=spot.rating,
+                    reviews=spot.reviews,
+                    image=spot.thumbnail,
+                    travel_min=int(arrive - s.leave),
+                    **leg(prev, at, arrive),
+                )
+            items.append(rest)
+            prev = at
     last_travel = run.back - (run.stops[-1].leave if run.stops else to_minutes(plan.leave_stay))
     items.append(
         Item(
@@ -984,10 +1034,17 @@ async def fill_paths(state: dict[str, Any], ctx: Ctx) -> dict[str, Any]:
     )
     calls, owners = [], []
     for pid in wanted:
-        stops = [s for s in (plans.get(pid) or {}).get("stops") or [] if s in places]
+        plan = plans.get(pid) or {}
+        stops = [s for s in plan.get("stops") or [] if s in places]
         if not stops:
             continue
-        points = [home, *(f"{places[s].lat},{places[s].lng}" for s in stops), home]
+        points = [home]
+        for k, s in enumerate(stops):
+            points.append(f"{places[s].lat},{places[s].lng}")
+            if plan.get("rest_after") == k:  # ghé chỗ nghỉ trưa (chỗ ở / quán gần đó) rồi đi tiếp
+                spot = places.get(plan.get("rest_at") or "")
+                points.append(f"{spot.lat},{spot.lng}" if spot else home)
+        points.append(home)
         for chunk in route_chunks(points):
             calls.append(
                 (

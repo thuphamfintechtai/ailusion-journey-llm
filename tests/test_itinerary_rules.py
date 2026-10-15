@@ -44,6 +44,7 @@ def family_form(**over: Any) -> TripForm:
         "kids_under_6": 1,
         "seniors_65": 2,
         "departure_time": "15:00",
+        "night_return_time": "23:30",
         "busy_slots": [{"day": 2, "busy_start": "17:00", "busy_end": None}],
         "purposes": ["relax", "food"],
         "message": "cả nhà muốn nghỉ ngơi, ăn hải sản; ngày 2 đi tiệc cưới",
@@ -109,27 +110,30 @@ def test_parse_clock(text: str, expected: str | None) -> None:
 # ---------------------------------------------------------------- bước 3–4
 
 
-def test_family_example_is_p2_with_free_minutes_750_525_270() -> None:
+def test_family_example_is_p2_with_free_minutes_840_435_270() -> None:
     profile = profile_trip(family_form(), stay_prices=[800_000], meal_prices=[100_000])
     assert profile.needs_care is True
     assert profile.nice_to_have_needs[:3] == ["kids", "high_chair", "baby_changing"]
-    # Không tự đặt luật về sớm (kể cả có bé 4 tuổi): ngày kéo tới 23:30 nếu user không điền.
+    # Giờ về tối theo user (23:30); không có bé thì cũng không tự đặt luật về sớm.
     assert profile.night_return_time == "23:30"
-    assert [d.free_minutes for d in profile.days] == [750, 525, 270]
+    # Không nhập giờ đến: ngày 1 bắt đầu 08:00 như các ngày khác. Ngày 1, 2 kéo tới tối: có nghỉ
+    # trưa 90 phút (930 − 90, 525 − 90).
+    assert [d.nap for d in profile.days] == [True, True, False]
+    assert [d.free_minutes for d in profile.days] == [840, 435, 270]
     assert profile.days[1].meal_only_slots == ["16:45–23:30"]
     assert profile.days[2].day_end == "12:30"  # 15:00 − 90 − 30 − 30
     assert (profile.group, profile.rule) == ("P2", "B2")
     assert profile.sort_order[0] == ("ride_min", "min")
-    assert "Ngày 1 bắt đầu 11:00" in profile.guess
+    assert "Ngày 1 bắt đầu 08:00" in profile.guess
 
 
 def test_group_rules_in_order() -> None:
     # B0: user chọn ưu tiên thì theo user.
     assert profile_trip(family_form(priority="saving"), [], []).group == "P1"
     couple = {"group_type": "couple", "kids_under_6": 0, "seniors_65": 0, "busy_slots": []}
-    # B3: ngân sách thấp hơn 1,5 × chi phí tối thiểu.
+    # Không còn B3: ngân sách thấp không tự thành "tiết kiệm" (bước ghép bám ±5% ngân sách).
     low = profile_trip(family_form(**couple, budget=3_000_000), [800_000], [100_000])
-    assert (low.group, low.rule) == ("P1", "B3")
+    assert (low.group, low.rule) == ("P3", "B4")
     # B4: còn lại.
     rich = profile_trip(family_form(**couple, budget=60_000_000), [800_000], [100_000])
     assert (rich.group, rich.rule) == ("P3", "B4")
@@ -153,9 +157,9 @@ def test_rating_floor_matches_the_worked_examples() -> None:
     assert rating_floor(4.5, 0) is None
 
 
-def test_capacity_example_is_9_6_3() -> None:
+def test_capacity_example_is_10_5_3() -> None:
     days = profile_trip(family_form(), [], []).days
-    assert capacity(days, typical_stay=60, typical_hop=20) == [9, 6, 3]
+    assert capacity(days, typical_stay=60, typical_hop=20) == [10, 5, 3]  # ngày 1, 2 nghỉ trưa
 
 
 def test_pareto_tiers() -> None:
@@ -248,8 +252,10 @@ def test_planner_output_rules() -> None:
     )
     errs = plan_errors(out, {"D1", "Q1"}, {1: "08:00", 2: "08:00"})
     text = " ".join(errs[1])
-    assert "D9" in text and "sớm hơn" in text and "ít nhất 3" in text
+    assert "D9" in text and "sớm hơn" in text and "ít nhất" not in text  # 2 lịch là đủ
     assert errs[2] == ["thiếu ngày 2"]
+    one = PlannerOutput(days=[{"day": 1, "plans": [out.days[0].plans[0]]}])
+    assert "ít nhất 2" in " ".join(plan_errors(one, {"D1", "Q1"}, {1: "08:00"})[1])
 
 
 def test_price_must_match_the_page() -> None:
@@ -857,8 +863,11 @@ def test_planner_sees_every_pair_of_its_day() -> None:
     }
     day = [f"D{i}" for i in range(1, 13)]
     pairs = day_pairs(day, codes, matrix)
-    assert len(pairs) == 12 * 11 // 2  # mọi cặp trong ngày, không cặp của ngày khác
-    assert pairs[0] == "D1–D2 3"
+    # Chỉ cặp trong ngày; mỗi chỗ có ít nhất PAIRS_PER_PLACE cặp gần nhất, không phải đủ 66 cặp.
+    assert pairs[0] == "D1–D2 3" and len(pairs) < 12 * 11 // 2
+    for c in day:
+        assert sum(c in p.split()[0].split("–") for p in pairs) >= 4
+    assert not any("D13" in p for p in pairs)
 
 
 # ------------------------------------- chuỗi quán lặp, chợ đêm chờ mở cửa (lịch Đà Lạt thật)
