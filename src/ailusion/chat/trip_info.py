@@ -10,6 +10,7 @@ Giá trị của các trường lựa chọn khớp đúng với form bên front
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Literal
@@ -27,7 +28,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 # Câu trả lời trước của trợ lý chỉ cần đoạn đủ để hiểu "ok", "được" là đồng ý với cái gì.
 LAST_AI_CHARS = 1500
 # Form chỉ vài chục trường ngắn: trần token đầu ra thấp.
-FORM_TOKENS = 500
+FORM_TOKENS = 600
 
 Access = Literal[
     "Hạn chế leo dốc, bậc thang",
@@ -48,6 +49,20 @@ Interest = Literal[
     "Mua sắm",
     "Về đêm",
 ]
+
+
+class ChatMustVisit(BaseModel):
+    """Địa điểm cụ thể người dùng nói muốn đi (đổ vào ô "Địa điểm muốn đi" của form)."""
+
+    name: str = Field(description="Tên riêng của địa điểm, như người dùng nói")
+    day: int | None = Field(None, description="Ngày thứ mấy của chuyến; không nói thì trống")
+    time: str | None = Field(
+        None, description='"HH:MM" (24 giờ) hoặc morning / afternoon / evening; không nói thì trống'
+    )
+
+
+MUST_TIME = re.compile(r"^(\d{2}:\d{2}|morning|afternoon|evening)$")
+MAX_MUSTS = 10
 
 
 class TripInfo(BaseModel):
@@ -80,6 +95,9 @@ class TripInfo(BaseModel):
     pace: Literal["slow", "normal", "packed"] | None = Field(
         None, description="slow = thong thả, normal = vừa phải, packed = đi nhiều nơi"
     )
+    must_visits: list[ChatMustVisit] = Field(
+        default_factory=list, description="Địa điểm cụ thể người dùng muốn đi"
+    )
 
     def cleaned(self) -> TripInfo:
         """Bỏ số vô lý model đôi khi trả về (0 ngày, -1 người), để form không nhận rác."""
@@ -96,6 +114,7 @@ class TripInfo(BaseModel):
                 "start_date": self.start_date if _is_date(self.start_date) else None,
                 "access": list(dict.fromkeys(self.access)),
                 "interests": list(dict.fromkeys(self.interests)),
+                "must_visits": _clean_musts(self.must_visits, self.days),
             }
         )
 
@@ -195,6 +214,21 @@ def transcript_text(messages: Sequence[tuple[str, str]]) -> str:
         if role in speaker and content.strip()
     ]
     return "\n\n".join(lines)
+
+
+def _clean_musts(musts: list[ChatMustVisit], days: int | None) -> list[ChatMustVisit]:
+    """Bỏ tên trống / trùng; ngày ngoài chuyến và giờ sai dạng thì bỏ trống (không bỏ cả chỗ)."""
+    out: dict[str, ChatMustVisit] = {}
+    for m in musts:
+        name = m.name.strip()
+        if not name or name.lower() in out:
+            continue
+        out[name.lower()] = ChatMustVisit(
+            name=name,
+            day=m.day if m.day and m.day >= 1 and (days is None or m.day <= days) else None,
+            time=m.time if m.time and MUST_TIME.match(m.time) else None,
+        )
+    return list(out.values())[:MAX_MUSTS]
 
 
 def _within(value: int | None, low: int, high: int) -> int | None:

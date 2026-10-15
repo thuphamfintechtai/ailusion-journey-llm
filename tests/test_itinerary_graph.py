@@ -87,7 +87,7 @@ def _respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
         }
     if name == "search_hotels":
         return {**ok, "hotels": []}
-    if name in ("browse_places", "find_places_by_needs"):
+    if name == "find_places":
         text = f"{args.get('category', '')} {args.get('query', '')}".lower()
         if any(w in text for w in ("nhà hàng", "quán", "hải sản", "đặc sản", "ẩm thực", "chợ")):
             return {**ok, "places": FOODS}
@@ -189,8 +189,7 @@ TOOLS = (
     "geocode_vn",
     "find_stays",
     "search_hotels",
-    "browse_places",
-    "find_places_by_needs",
+    "find_places",
     "find_festivals",
     "search_events",
     "weather_forecast",
@@ -356,7 +355,7 @@ async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None
     if v4 is not None:
         assert v4.matches_purpose is True
     assert names
-    # Ảnh: chỗ đã có ảnh từ browse_places không hỏi lại; còn lại lấy bằng 1 lượt get_place_photos.
+    # Ảnh: chỗ đã có ảnh từ find_places không hỏi lại; còn lại lấy bằng 1 lượt get_place_photos.
     photo_calls = [a for n, a in CALLS if n == "get_place_photos"]
     assert len(photo_calls) == 1 and "v1" not in photo_calls[0]["places"]
     stops = [i for o in resp.options for d in o.days for i in d.items if i.place_id]

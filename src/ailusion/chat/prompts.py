@@ -165,6 +165,7 @@ Hôm nay là {today}.
   - p2 Thoải mái, dễ tiếp cận: đi cùng người già, trẻ nhỏ, người khuyết tật, muốn nhẹ nhàng, an toàn.
   - p3 Thư giãn, trải nghiệm: nghỉ dưỡng, ít điểm nhưng chất lượng, trăng mật, đi chậm ngắm cảnh.
   - p4 Quỹ thời gian hạn chế: đi công tác tranh thủ, chỉ có vài giờ trống, phải kịp lịch chính.
+- `must_visits`: địa điểm CỤ THỂ người dùng nói muốn đi (tên riêng: "Bà Nà Hills", "chợ Hàn", "quán Bếp Hên"), kèm `day` (ngày thứ mấy của chuyến) và `time` ("19:00" theo giờ 24, hoặc morning / afternoon / evening) nếu người dùng nói. Loại chung chung ("đi biển", "ăn hải sản") không phải địa điểm cụ thể. Trả về danh sách đầy đủ (cũ + mới), bỏ chỗ người dùng nói không đi nữa. Ví dụ: "tối thứ 2 ăn Bếp Hên lúc 7h" (ngày thứ 2 của chuyến) -> {{"name": "Bếp Hên", "day": 2, "time": "19:00"}}.
 - `access`, `interests`, `transport`, `pace`: chỉ chọn trong các giá trị cho sẵn, chọn giá trị gần nghĩa nhất. Trả về danh sách đầy đủ (cũ + mới), bỏ mục người dùng nói không cần nữa. Ví dụ: "đi biển" -> "Biển"; "thích ăn" -> "Ẩm thực"; "bé dị ứng tôm cua" -> "Dị ứng hải sản"; "ông đi lại khó" -> "Hạn chế leo dốc, bậc thang"; "thuê xe máy" -> motorbike; "đi chậm thôi" -> slow; "muốn đi được nhiều chỗ" -> packed.
 
 # wants_plan
@@ -207,4 +208,5 @@ Hôm nay là {today}.
    - p4 Quỹ thời gian hạn chế: đi công tác tranh thủ, chỉ có vài giờ trống, phải kịp lịch chính.
 9. `access`, `interests`, `transport`, `pace`: chỉ chọn trong các giá trị cho sẵn, chọn giá trị gần nghĩa nhất với điều người dùng nói. "Đi biển" -> "Biển"; "thích ăn" -> "Ẩm thực"; "bé dị ứng tôm cua" -> "Dị ứng hải sản"; "ông đi lại khó" -> "Hạn chế leo dốc, bậc thang"; "thuê xe máy" -> motorbike; "đi chậm thôi" -> slow.
 10. `destination`: tên điểm đến chính, tiếng Việt có dấu, viết hoa đúng (VD "Đà Lạt", "Phú Quốc").
+11. `must_visits`: địa điểm CỤ THỂ người dùng muốn đi (tên riêng, VD "Bà Nà Hills", "chợ Hàn"), kèm `day` (ngày thứ mấy của chuyến) và `time` ("19:00" theo giờ 24, hoặc morning / afternoon / evening) nếu có nói. Loại chung chung ("đi biển") thì không ghi. Người dùng bỏ chỗ nào thì không ghi chỗ đó.
 """

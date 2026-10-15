@@ -20,12 +20,14 @@ from ..agents.planner import (
     call_planner,
     day_codes_of,
     errors_of,
+    must_codes_of,
     plan_errors,
     visit_groups,
 )
 from ..shared.context import Ctx
-from ..shared.form import DINNER, LUNCH, TripForm, hhmm, to_minutes
-from ..shared.math import median
+from ..shared.fares import city_of
+from ..shared.form import DINNER, LUNCH, TripForm, hhmm, must_time_text, must_window, to_minutes
+from ..shared.math import km, median
 from ..shared.models import (
     STAY,
     DayPlan,
@@ -44,6 +46,7 @@ from ..shared.models import (
     profile_of,
     same_brand,
 )
+from ..tabs import EXTRA_PCT, leg_cost, rental_of
 
 MEAL_WAIT_MAX = 45  # tới quán sớm hơn giờ ăn tối đa ngần này phút thì chờ (số tạm, "tu_dat")
 # Chờ mở cửa / chờ hết giờ nghỉ lâu hơn ngần này phút là lỗi (VD tới chợ đêm 13:48, chờ 270 phút).
@@ -165,7 +168,10 @@ def place_meals(
         for m in spare_meals
         if m not in plan.stops and not any(same_brand(places[m], places[k]) for k in meals)
     ][:3]
-    meal_sets = [meals] + [meals[:i] + meals[i + 1 :] for i in range(len(meals))]
+    # Bỏ bớt quán: không bao giờ bỏ quán user chọn.
+    meal_sets = [meals] + [
+        meals[:i] + meals[i + 1 :] for i in range(len(meals)) if not places[meals[i]].must
+    ]
 
     def one_brand_twice(chosen: list[str]) -> bool:
         return any(
@@ -250,7 +256,10 @@ def simulate(
     t = to_minutes(plan.leave_stay)
     prev = STAY
     stops, issues, unchecked = [], [], []
-    for pid in plan.stops:
+    # Còn chỗ hẹn giờ phía sau: tới quán sớm thì ngồi chờ tới giờ ăn cũng được (đằng nào cũng
+    # phải đợi giờ hẹn), không coi là lệch giờ ăn.
+    timed = [i for i, pid in enumerate(plan.stops) if places[pid].must and places[pid].must_time]
+    for k, pid in enumerate(plan.stops):
         p = places[pid]
         travel = matrix.get((prev, pid))
         if travel is None:
@@ -270,17 +279,30 @@ def simulate(
         start = max(arrive, open_)
         meal_wait = 0  # chờ tới giờ ăn (có chủ ý, ≤ MEAL_WAIT_MAX) không tính là chờ mở cửa
         if p.kind == "meal":  # tới quán sớm một chút trước giờ ăn thì chờ tới giờ ăn
+            wait_max = 24 * 60 if any(i > k for i in timed) else MEAL_WAIT_MAX
             for a, _b in (LUNCH, DINNER):
-                if 0 < to_minutes(a) - start <= MEAL_WAIT_MAX:
+                if 0 < to_minutes(a) - start <= wait_max:
                     meal_wait, start = to_minutes(a) - start, to_minutes(a)
+        # Chỗ user hẹn giờ: tới sớm thì chờ tới giờ đó; trễ quá khung là lỗi.
+        window_ = must_window(p.must_time) if p.must else None
+        early = window_ is not None and start < window_[0]
+        if early:
+            start = window_[0]  # type: ignore[index]
         breaks = sorted(p.breaks.get(plan.day, []))
         for a, b in breaks:  # tới đúng giờ nghỉ giữa ngày thì chờ mở lại
             if a <= start < b:
                 start = b
-        if start - arrive - meal_wait > LONG_WAIT_MAX:
+        # Chờ trước giờ hẹn của user là thời gian tự do, không phải lỗi; chờ mở cửa / chờ
+        # hết giờ nghỉ quá lâu mới là lỗi.
+        if not early and start - arrive - meal_wait > LONG_WAIT_MAX:
             issues.append(
                 f"tới {p.name} lúc {hhmm(arrive)}, phải chờ {start - arrive} phút tới "
                 f"{hhmm(start)} mới vào được"
+            )
+        if window_ is not None and start > window_[1]:
+            issues.append(
+                f"tới {p.name} lúc {hhmm(start)}, trễ so với giờ bạn muốn "
+                f"({must_time_text(p.must_time)})"
             )
         stay = p.stay_high if long_stay else p.stay_low
         if stay is None:
@@ -331,7 +353,7 @@ def meal_time_issues(
         name = next(
             (n for n, (a, b) in windows.items() if to_minutes(a) <= s.start <= to_minutes(b)), None
         )
-        if name is None:
+        if name is None and not (p.must and p.must_time):  # user tự hẹn giờ ăn thì theo user
             out.append(
                 f"{p.name} ăn lúc {hhmm(s.start)}, ngoài giờ ăn trưa {LUNCH[0]}–"
                 f"{LUNCH[1]} và tối {DINNER[0]}–{DINNER[1]}"
@@ -366,9 +388,18 @@ def check_plan(
     window: DayWindow,
     profile: TripProfile,
     form: TripForm,
+    required: list[str] | None = None,
 ) -> str | None:
-    """Bước 11: gắn trạng thái; trả lý do cần Planner sửa (None = không cần)."""
+    """Bước 11: gắn trạng thái; trả lý do cần Planner sửa (None = không cần). `required`:
+    place_id chỗ user chọn mà lịch ngày này phải có."""
     short = simulate(plan, places, matrix, window, profile.required_needs, long_stay=False)
+    lacking = [places[pid].name for pid in required or [] if pid not in plan.stops]
+    if lacking:
+        short.issues.insert(0, f"thiếu chỗ bạn chọn: {', '.join(lacking)}")
+    if not plan.stops:
+        short.issues.insert(
+            0, "ngày này không còn chỗ nào hợp lệ để xếp (dữ liệu điểm đến thiếu hoặc bị lọc hết)"
+        )
     long = simulate(plan, places, matrix, window, profile.required_needs, long_stay=True)
     plan.run = short
     # Gộp, không gán đè: nhãn bước 9 gắn ("Planner chưa sửa hết lỗi") phải còn tới kết quả.
@@ -398,8 +429,46 @@ def check_plan(
     return None
 
 
+# Phát sinh lấy số giữa của khoảng `tabs.EXTRA_PCT` (10–15%) khi ước tiền cả ngày để ghép theo
+# ngân sách; màn hình vẫn hiện đủ khoảng thấp – cao.
+EXTRA_MID = sum(EXTRA_PCT) / 2
+
+
+def day_spend(
+    plan: DayPlan,
+    places: dict[str, Place],
+    form: TripForm,
+    km_matrix: dict[str, float] | None = None,
+) -> int | None:
+    """Tiền cả ngày cho cả đoàn, CHƯA gồm chỗ ở và phát sinh: vé + ăn + đi lại (gọi xe: giá các
+    hãng theo km thật; tự lái: thuê xe + xăng theo ngày). Thiếu giá chỗ nào thì None."""
+    cost = plan_cost(plan, places, form.group_size)
+    if cost is None:
+        return None
+    city = city_of(form.destination)
+    transport = 0
+    prev = STAY
+    run = plan.run
+    path = plan.stops + ([STAY] if plan.stops else [])
+    for i, pid in enumerate(path):
+        dist = (km_matrix or {}).get(f"{prev}|{pid}")
+        if dist is None and prev in places and pid in places:
+            a, b = places[prev], places[pid]
+            dist = km((a.lat, a.lng), (b.lat, b.lng)) * 1.4
+        minutes = run.stops[i].travel if run and i < len(run.stops) else 0
+        transport += leg_cost(dist, form.travel_mode, form.group_size, minutes, city) or 0
+        prev = pid
+    rent = rental_of(form.travel_mode, form.group_size)
+    rental = (rent[0] + rent[1]) // 2 if rent else 0
+    return int(round((cost + transport + rental) / 1000) * 1000)
+
+
 def measure(
-    plan: DayPlan, places: dict[str, Place], profile: TripProfile, form: TripForm
+    plan: DayPlan,
+    places: dict[str, Place],
+    profile: TripProfile,
+    form: TripForm,
+    km_matrix: dict[str, float] | None = None,
 ) -> dict[str, float | None]:
     run = plan.run
     visits = [places[pid] for pid in plan.stops if places[pid].kind != "meal"]
@@ -425,6 +494,7 @@ def measure(
         else None,
         "popularity": median([float(r) for r in reviews]),
         "needs_met": len(met),
+        "spend": day_spend(plan, places, form, km_matrix),
     }
 
 
@@ -449,6 +519,8 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
     plans = plans_of(state)
     await ctx.log("kiem_lich", "step", f"Chạy thử {len(plans)} lịch theo đồng hồ, 2 lần")
     spare = meals_by_day(state, places)
+    must_codes = must_codes_of(state)
+    required = {d.day: [state["codes"][c] for c in must_codes.get(d.day, [])] for d in profile.days}
     # Thứ tự chỗ chơi: code sắp lại cho ít ngồi xe (Planner hay xếp chạy qua lại), trước khi đặt
     # quán ăn để bữa ăn rơi đúng chỗ trên thứ tự mới.
     needs = profile.required_needs
@@ -468,7 +540,9 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
         await ctx.log("kiem_lich", "finding", f"Đặt lại quán ăn cho đúng giờ ở {moved} lịch")
     fix: dict[int, list[str]] = {}
     for plan in plans.values():
-        reason = check_plan(plan, places, matrix, windows[plan.day], profile, form)
+        reason = check_plan(
+            plan, places, matrix, windows[plan.day], profile, form, required[plan.day]
+        )
         if reason:
             fix.setdefault(plan.day, []).append(f"{plan.id.split('-', 1)[1]}: {reason}")
     calls_total, usage_total = 0, []
@@ -489,6 +563,7 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
             {d.day: windows[d.day].day_start for d in fixed_days},
             groups,
             day_codes_of(state),
+            must_codes,
         )
         for d in fixed_days:
             for p in d.plans:
@@ -505,15 +580,16 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
                 )
                 reorder_visits(new, places, matrix, windows[d.day], spare[d.day], needs)
                 place_meals(new, places, matrix, windows[d.day], spare[d.day])
-                check_plan(new, places, matrix, windows[d.day], profile, form)  # sau sửa: gắn nhãn
+                # sau sửa: gắn nhãn
+                check_plan(new, places, matrix, windows[d.day], profile, form, required[d.day])
                 own = errors_of(p.id, rule_errors.get(d.day, []))
                 if own:
                     new.unchecked.append("Planner chưa sửa hết lỗi: " + "; ".join(own[:2]))
                 plans[pid] = new
     for plan in plans.values():
         if plan.run is None:
-            check_plan(plan, places, matrix, windows[plan.day], profile, form)
-        plan.metrics = measure(plan, places, profile, form)
+            check_plan(plan, places, matrix, windows[plan.day], profile, form, required[plan.day])
+        plan.metrics = measure(plan, places, profile, form, state.get("km_matrix"))
     statuses = {
         s: sum(p.status == s for p in plans.values()) for s in ("ok", "risky", "warn", "fail")
     }

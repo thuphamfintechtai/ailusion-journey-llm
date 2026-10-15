@@ -391,7 +391,7 @@ def test_decomposed_vietnamese_text_still_matches() -> None:
             "status": "success",
             "places": [{"place_id": "x", "name": "Bé Mặn", "category": nfd, "lat": 16, "lng": 108}],
         },
-        "browse_places",
+        "find_places",
     )
     assert pool["x"].kind == "meal"
     assert _place("y", category=unicodedata.normalize("NFD", "Chùa")).group == "chùa"
@@ -629,12 +629,12 @@ def test_thumbnail_is_read_from_search_tools() -> None:
 
     pool: dict[str, Place] = {}
     raw = {"place_id": "x", "name": "Hồ Xuân Hương", "category": "Hồ", "lat": 11.9, "lng": 108.4}
-    add_places(pool, {"status": "success", "places": [raw]}, "browse_places")
+    add_places(pool, {"status": "success", "places": [raw]}, "find_places")
     assert pool["x"].thumbnail is None
     add_places(
         pool,
         {"status": "success", "places": [{**raw, "thumbnail": "https://img/x.jpg"}]},
-        "find_places_by_needs",
+        "find_places",
     )
     assert pool["x"].thumbnail == "https://img/x.jpg"  # lần sau có ảnh thì điền
     assert add_photos(pool, {"status": "error"}) == 0

@@ -116,6 +116,49 @@ class BusySlot(BaseModel):
     place: str | None = Field(None, description="Chỗ bận, để hỏi phút đi (get_route)")
 
 
+# Địa điểm user muốn đi: có giờ buổi thì phải bắt đầu ở chỗ đó trong khung này.
+MUST_BUCKETS = {
+    "morning": ("08:00", "11:30"),
+    "afternoon": ("13:30", "17:30"),
+    "evening": ("18:00", "21:30"),
+}
+MUST_BUCKET_NAMES = {"morning": "buổi sáng", "afternoon": "buổi chiều", "evening": "buổi tối"}
+MUST_LATE_MAX = 20  # tới trễ giờ user hẹn quá ngần này phút là lỗi (số tạm, "tu_dat")
+# Hẹn giờ cụ thể buổi tối: ngày kết thúc ít nhất giờ hẹn + ngần này phút (ở lại + về; số tạm).
+MUST_EVENING_STAY = 90
+
+
+class MustVisit(BaseModel):
+    """Địa điểm user chỉ định: lộ trình phải có, đúng ngày / giờ nếu user nói."""
+
+    name: str = Field(min_length=1, max_length=120)
+    day: int | None = Field(
+        None, ge=1, description="Ngày thứ mấy của chuyến; None = ngày nào cũng được"
+    )
+    time: str | None = Field(
+        None,
+        pattern=r"^(\d{2}:\d{2}|morning|afternoon|evening)$",
+        description='"HH:MM" (tới lúc) hoặc morning / afternoon / evening; None = giờ nào cũng',
+    )
+
+
+def must_window(time: str | None) -> tuple[int, int] | None:
+    """Khung phút được phép BẮT ĐẦU ở chỗ user chỉ định: giờ cụ thể -> [giờ, giờ + MUST_LATE_MAX];
+    buổi -> khung `MUST_BUCKETS`; không nói giờ -> None."""
+    if not time:
+        return None
+    if time in MUST_BUCKETS:
+        a, b = MUST_BUCKETS[time]
+        return to_minutes(a), to_minutes(b)
+    return to_minutes(time), to_minutes(time) + MUST_LATE_MAX
+
+
+def must_time_text(time: str | None) -> str | None:
+    if not time:
+        return None
+    return MUST_BUCKET_NAMES.get(time, f"lúc {time}")
+
+
 class TripForm(BaseModel):
     """Form bước 1. Tên trường đúng tên biến trên trang thiết kế."""
 
@@ -149,6 +192,7 @@ class TripForm(BaseModel):
     purposes: list[Purpose] = Field(default_factory=list)
     interests: str = ""
     walking_level: Walking | None = None
+    must_visits: list[MustVisit] = Field(default_factory=list, max_length=10)
     priority: Priority | None = None
     spend_style: SpendStyle = "normal"
 
@@ -161,6 +205,11 @@ class TripForm(BaseModel):
             raise ValueError("Ngày về phải sau hoặc bằng ngày đi")
         if self.num_days > 7:
             raise ValueError("Tối đa 7 ngày")
+        for m in self.must_visits:
+            if m.day is not None and m.day > self.num_days:
+                raise ValueError(
+                    f"{m.name}: chuyến chỉ có {self.num_days} ngày, không có ngày {m.day}"
+                )
         return self
 
     @property

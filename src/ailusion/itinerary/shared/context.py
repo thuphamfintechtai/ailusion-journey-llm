@@ -1,7 +1,7 @@
 """Những việc một node được làm, gom vào `Ctx` để node chỉ cần nhận `(state, ctx)`:
 
     data, log = await ctx.tool("geocode_vn", address="Đà Nẵng")          # 1 tool
-    results, logs = await ctx.many([("browse_places", {...}), ...])       # nhiều tool song song
+    results, logs = await ctx.many([("find_places", {...}), ...])       # nhiều tool song song
     out, calls, usage = await ctx.ask(PROMPT, human, Schema, 900, "node") # 1 lượt LLM
     await ctx.log("node", "step", "đang làm gì")                         # nhật ký cho web xem
 

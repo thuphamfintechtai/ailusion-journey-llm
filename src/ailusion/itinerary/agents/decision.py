@@ -125,7 +125,7 @@ def decision_facts(
     ]
     for o in options:
         lines.append(
-            f"\n## {o['id']} (Phương án {o['id'][2:]}) — tổng {money(o['total_cost'])}; hơn ở: "
+            f"\n## {o['id']} (Phương án {o['id'][2:]}) — tổng ước {money(o.get('estimate') if o.get('estimate') is not None else o['total_cost'])} (gồm đi lại, chỗ ở, phát sinh); hơn ở: "
             + (", ".join(o["better_at"]) or "không nổi bật")
         )
         for pid in o["days"]:
