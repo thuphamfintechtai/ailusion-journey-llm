@@ -432,14 +432,16 @@ def test_lunch_break_is_read_and_respected() -> None:
     run = simulate(
         late, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
     )
-    assert run.stops[0].start == 810 and [i for i in run.issues if "thiếu bữa" not in i] == [
-        "tới bt lúc 11:30, phải chờ 120 phút tới 13:30 mới vào được"
-    ]
+    assert run.stops[0].start == 810 and [
+        i for i in run.issues if "thiếu bữa" not in i and "bữa sáng phải" not in i
+    ] == ["tới bt lúc 11:30, phải chờ 120 phút tới 13:30 mới vào được"]
     ok = DayPlan(id="L1", day=2, leave_stay="13:00", stops=["bt"])
     run = simulate(
         ok, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
     )
-    assert run.stops[0].start == 810 and not [i for i in run.issues if "thiếu bữa" not in i]
+    assert run.stops[0].start == 810 and not [
+        i for i in run.issues if "thiếu bữa" not in i and "bữa sáng phải" not in i
+    ]
     early = DayPlan(id="L2", day=2, leave_stay="10:30", stops=["bt"])
     run = simulate(
         early, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False

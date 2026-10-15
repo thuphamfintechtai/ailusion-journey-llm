@@ -143,7 +143,7 @@ LOW_FREE_MINUTES = 300  # B1: ngày rảnh ít
 #   còn cách bữa trưa đủ xa); sau 11:00 không có bữa sáng.
 # - Trưa: mốc 11:30–13:00, dịch tối đa 1 tiếng (10:30–14:00). Bắt đầu từ 13:00 thì không bắt buộc.
 # - Tối: 18:00–20:00.
-# - Hai bữa liền nhau cách ít nhất MIN_MEAL_GAP phút (cứng); ưu tiên 3–4 tiếng (luật Planner).
+# - Hai bữa liền nhau cách ít nhất MIN_MEAL_GAP phút (không được quá sát); nên 3–4 tiếng.
 BREAKFAST = ("06:30", "10:00")
 BREAKFAST_TARGET = ("06:30", "08:30")
 BREAKFAST_IF_START_BY = "08:00"
@@ -154,7 +154,13 @@ DINNER = ("18:00", "20:00")
 MEALS = {"sáng": BREAKFAST, "trưa": LUNCH, "tối": DINNER}
 # Ngày có ít nhất ngần này phút trong khung mốc của một bữa thì bữa đó tính là trong giờ rảnh.
 MEAL_MIN_OVERLAP = 30
-MIN_MEAL_GAP = 120
+MIN_MEAL_GAP = 150
+# Bắt đầu ngày ≤ BREAKFAST_IF_START_BY: bữa sáng là việc ĐẦU TIÊN, ăn trước giờ này (mốc 06:30–08:30
+# + thời gian chuẩn bị). Ăn sáng muộn (tới 10:00) chỉ dành cho ngày bắt đầu 08:00–11:00.
+BREAKFAST_FIRST_BY = "09:00"
+# Chỗ hợp đi buổi chiều / tối (spa, massage…): không xếp trước giờ này.
+AFTERNOON_GROUPS = ("spa",)
+AFTERNOON_FROM = "13:00"
 
 
 def required_meals(day_start: str, day_end: str) -> list[str]:
