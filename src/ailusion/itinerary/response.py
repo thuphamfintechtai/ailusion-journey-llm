@@ -37,6 +37,7 @@ from .shared.form import (
     hhmm,
     money,
     must_time_text,
+    skipped_meals,
     to_minutes,
 )
 from .shared.llm import cost_usd
@@ -205,6 +206,10 @@ class Day(BaseModel):
         "Google theo `route_precision`, nối tiếp nhau; trống = bản đồ nối thẳng các điểm",
     )
     route_precision: int = Field(5, description="Số chữ số thập phân của polyline")
+    meal_notes: list[str] = Field(
+        default_factory=list,
+        description="Bữa không xếp / tuỳ chọn và lý do (VD bắt đầu 10:00 nên bữa sáng tuỳ chọn)",
+    )
     area_note: str | None = Field(
         None, description="Một câu về vùng đi của ngày: bán kính, xa nhất"
     )
@@ -529,6 +534,14 @@ def night_price(state: dict[str, Any], form: TripForm) -> int | None:
     return price * math.ceil(form.group_size / 2) if price else None
 
 
+def day_meal_notes(state: dict[str, Any], day: int) -> list[str]:
+    """Bữa không xếp / tuỳ chọn của ngày theo giờ bắt đầu, giờ kết thúc (bộ quy tắc ăn uống)."""
+    if not state.get("profile"):
+        return []
+    window = next((d for d in profile_of(state).days if d.day == day), None)
+    return skipped_meals(window.day_start, window.day_end) if window else []
+
+
 def day_cost(
     items: list[Item],
     night: int,
@@ -821,6 +834,7 @@ def _day(
         route_paths=((state.get("paths") or {}).get(plan.id) or {}).get("paths") or [],
         route_precision=((state.get("paths") or {}).get(plan.id) or {}).get("precision") or 5,
         area_note=area_note([places[s.place_id] for s in run.stops], state, matrix or {}),
+        meal_notes=day_meal_notes(state, plan.day),
         lunar=str(to_lunar(date)),
         holiday=holiday_of(date, state.get("festival_dates")),
         crowd=crowd,  # type: ignore[arg-type]

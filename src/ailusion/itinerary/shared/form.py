@@ -137,26 +137,59 @@ HUB_EXIT_MIN = 15  # ra khỏi bến
 HUB_TRAVEL_MIN = 30  # bến <-> chỗ ở khi chưa biết vị trí bến
 BUSY_TRAVEL_MIN = 15  # tới chỗ bận khi chưa biết vị trí
 LOW_FREE_MINUTES = 300  # B1: ngày rảnh ít
-# Khung giờ ăn (quy ước sản phẩm, khớp luật 6 của Agent Planner). Bữa sáng ăn ở chỗ ở, không xếp.
-# Bữa sáng tới 10:00: ngày bắt đầu từ 09:30 trở về trước bắt buộc có bữa sáng (phủ ≥ 30 phút),
-# bắt đầu 10:00 hay chiều thì không.
+# Khung giờ ăn — bộ quy tắc sắp xếp ăn uống (khớp luật 6 của Agent Planner):
+# - Sáng: mốc 06:30–08:30; ăn sáng muộn được tới 10:00. BẮT BUỘC chỉ khi ngày bắt đầu (giờ dậy /
+#   giờ tới) từ BREAKFAST_IF_START_BY trở về trước; bắt đầu 08:00–11:00 thì tuỳ (ăn sáng muộn nếu
+#   còn cách bữa trưa đủ xa); sau 11:00 không có bữa sáng.
+# - Trưa: mốc 11:30–13:00, dịch tối đa 1 tiếng (10:30–14:00). Bắt đầu từ 13:00 thì không bắt buộc.
+# - Tối: 18:00–20:00.
+# - Hai bữa liền nhau cách ít nhất MIN_MEAL_GAP phút (cứng); ưu tiên 3–4 tiếng (luật Planner).
 BREAKFAST = ("06:30", "10:00")
-LUNCH = ("11:00", "13:30")
+BREAKFAST_TARGET = ("06:30", "08:30")
+BREAKFAST_IF_START_BY = "08:00"
+LUNCH = ("10:30", "14:00")
+LUNCH_TARGET = ("11:30", "13:00")
+LUNCH_IF_START_BEFORE = "13:00"
 DINNER = ("18:00", "20:00")
 MEALS = {"sáng": BREAKFAST, "trưa": LUNCH, "tối": DINNER}
-# Ngày có ít nhất ngần này phút trong khung một bữa thì bắt buộc có bữa đó (quy ước sản phẩm:
-# ngày trọn vẹn phải đủ 3 bữa; ngày đến trưa / về sớm chỉ cần các bữa nằm trong giờ rảnh).
+# Ngày có ít nhất ngần này phút trong khung mốc của một bữa thì bữa đó tính là trong giờ rảnh.
 MEAL_MIN_OVERLAP = 30
+MIN_MEAL_GAP = 120
 
 
 def required_meals(day_start: str, day_end: str) -> list[str]:
-    """Các bữa bắt buộc của một ngày theo giờ rảnh: "sáng" / "trưa" / "tối"."""
+    """Các bữa bắt buộc của một ngày theo giờ bắt đầu (giờ dậy / giờ tới) và giờ kết thúc."""
     a, b = to_minutes(day_start), to_minutes(day_end)
+
+    def covers(window: tuple[str, str]) -> bool:
+        return min(b, to_minutes(window[1])) - max(a, to_minutes(window[0])) >= MEAL_MIN_OVERLAP
+
     out = []
-    for name, (m0, m1) in MEALS.items():
-        overlap = min(b, to_minutes(m1)) - max(a, to_minutes(m0))
-        if overlap >= MEAL_MIN_OVERLAP:
-            out.append(name)
+    if a <= to_minutes(BREAKFAST_IF_START_BY) and covers(BREAKFAST_TARGET):
+        out.append("sáng")
+    if a < to_minutes(LUNCH_IF_START_BEFORE) and covers(LUNCH_TARGET):
+        out.append("trưa")
+    if covers(DINNER):
+        out.append("tối")
+    return out
+
+
+def skipped_meals(day_start: str, day_end: str) -> list[str]:
+    """Bữa không xếp và lý do (hiện cho user, để không ai tự thêm lại bữa không cần)."""
+    a, b = to_minutes(day_start), to_minutes(day_end)
+    need = required_meals(day_start, day_end)
+    out = []
+    if "sáng" not in need:
+        if a <= to_minutes("11:00") and a > to_minutes(BREAKFAST_IF_START_BY):
+            out.append(f"Bữa sáng tuỳ chọn: ngày bắt đầu {day_start}, có thể ăn sáng muộn")
+        elif a > to_minutes("11:00"):
+            out.append(f"Không xếp bữa sáng: ngày bắt đầu {day_start}")
+    if "trưa" not in need and a >= to_minutes(LUNCH_IF_START_BEFORE):
+        out.append(f"Không bắt buộc bữa trưa: ngày bắt đầu {day_start}")
+    if "trưa" not in need and b < to_minutes(LUNCH_TARGET[0]) + MEAL_MIN_OVERLAP:
+        out.append(f"Không xếp bữa trưa: ngày kết thúc {day_end}")
+    if "tối" not in need and b < to_minutes(DINNER[0]) + MEAL_MIN_OVERLAP:
+        out.append(f"Không xếp bữa tối: ngày kết thúc {day_end}")
     return out
 
 
