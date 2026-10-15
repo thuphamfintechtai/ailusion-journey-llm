@@ -32,7 +32,19 @@ FOOD_WORDS = (
 )
 
 
-STAY_WORDS = ("khách sạn", "resort", "homestay", "nhà nghỉ", "hostel", "villa", "căn hộ", "hotel")
+STAY_WORDS = (
+    "khách sạn",
+    "resort",
+    "homestay",
+    "nhà nghỉ",
+    "hostel",
+    "villa",
+    "căn hộ",
+    "hotel",
+    "residence",
+    "apartment",
+    "condotel",
+)
 SKIP_WORDS = ("nhà điều hành du lịch", "công ty du lịch", "đại lý", "văn phòng")
 
 

@@ -56,7 +56,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 
 11. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày nên có mức tiền khác nhau quanh con số đó (một lịch thấp hơn, một lịch sát, một lịch cao hơn một chút), để hệ thống ghép được cả chuyến sát ngân sách user đưa. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
 
-12. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong cả chuyến, nên đưa vào nhiều lịch (quán thì vào đúng bữa trưa / tối).
+12. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong mỗi phương án (rải ra vài ngày), nhưng MỖI NGÀY TỐI ĐA 1 BỮA cho cùng một món (không ăn bún bò cả sáng lẫn trưa); quán thì vào đúng bữa trưa / tối, ngày vẫn phải có chỗ đi chơi.
 
 13. Ngày ghi "nghỉ trưa": sau bữa trưa hệ thống tự chèn 90 phút nghỉ (chỗ ở / quán cà phê / khách sạn gần đó) (không cần ghi vào `stops`). Buổi chiều sau đó tới bữa tối PHẢI có chỗ chơi: không để trống — tới quán tối sớm quá 45 phút là lỗi. "rảnh … phút" đã trừ giờ nghỉ trưa.
 

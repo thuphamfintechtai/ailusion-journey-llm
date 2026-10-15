@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 from ..shared.context import Ctx
 from ..shared.form import TripForm
 from ..shared.llm import OUTPUT_TOKENS, norm, quote_found
-from ..shared.models import ItineraryState, form_of
+from ..shared.models import ItineraryState, _plain, form_of
+from ..shared.tools import kind_of
 
 INTAKE_TEMPLATE = """Bạn đọc lời nhắn tự do của người dùng trong ứng dụng lập lộ trình du lịch Việt Nam, để điền các ô form họ còn bỏ trống.
 
@@ -31,7 +32,7 @@ INTAKE_TEMPLATE = """Bạn đọc lời nhắn tự do của người dùng tron
 - `group_type`: solo (một mình) · couple (cặp đôi) · friends (bạn bè) · colleagues (đồng nghiệp) · family (gia đình)
 - `kids_under_6`, `kids_6_12`, `seniors_65` (từ 65 tuổi), `wheelchair_users`: số người, ghi chữ số
 - `purposes` (mỗi mục đích một dòng, tối đa 2, theo thứ tự user nhắc): relax (nghỉ ngơi, thư giãn) · food (ăn uống, đặc sản) · culture (khám phá, văn hoá, lịch sử) · fun (vui chơi, sự kiện, về đêm) · adventure (phiêu lưu, leo núi, trekking) · shopping (mua sắm)
-- `interests`: thứ cụ thể user muốn ăn / đi / làm, VD "bún bò", "hải sản", "cà phê view", "biển". Ô này LUÔN được đọc (kể cả khi user đã điền), phần lấy được sẽ cộng thêm vào. Mỗi thứ một dòng
+- `interests`: thứ cụ thể user muốn ăn / đi / làm, VD "bún bò", "hải sản", "cà phê view", "biển" — lấy cả trong lời nhắn lẫn phần "Nhu cầu bắt buộc user tự ghi" (user hay ghi món muốn ăn ở đó). Ô này LUÔN được đọc (kể cả khi user đã điền), phần lấy được sẽ cộng thêm vào. Mỗi thứ một dòng
 - `priority`: comfort (đỡ mệt) · leisure (thong thả) · short_time (ít thời gian) · many_places (đi được nhiều chỗ, "đi nhiều nơi"). "Tiết kiệm" KHÔNG phải ưu tiên (đã có ngân sách), không điền
 - `spend_style`: normal · unlimited ("không ngại chi thêm") · luxury_within_budget ("sang nhưng không vượt")
 - `arrival_time`, `departure_time`, `wake_time`, `night_return_time`: giờ như user viết, hoặc morning / afternoon / evening
@@ -210,6 +211,7 @@ def apply_extracted(
     data = form.model_dump()
     kept: list[dict[str, str]] = []
     purposes: list[str] = []
+    said = f"{form.message}\n{form.needs_note}"
     for item in extraction.items:
         field, value = item.field, item.value.strip()
         # Sở thích luôn được cộng thêm từ lời nhắn (ô đã điền thì nối vào, không ghi đè); ô khác
@@ -218,7 +220,8 @@ def apply_extracted(
         if (
             field not in ALLOWED
             or (field in sent and not appendable)
-            or not quote_found(item.quote, form.message)
+            # Sở thích có thể nằm ở ô "nhu cầu khác" (VD "bún bò"); ô khác chỉ đọc lời nhắn.
+            or not quote_found(item.quote, said if appendable else form.message)
         ):
             continue
         allowed = ALLOWED[field]
@@ -267,7 +270,6 @@ def apply_extracted(
             data["busy_slots"] = busy
     # Nhu cầu bắt buộc: luôn cộng thêm (không ghi đè ô đã chọn), mã phải nằm trong danh sách và
     # câu trích phải có trong lời nhắn hoặc ô "nhu cầu khác".
-    said = f"{form.message}\n{form.needs_note}"
     needs = list(data.get("required_needs") or [])
     for n in extraction.required_needs:
         if n.code in NEED_CODES and quote_found(n.quote, said) and n.code not in needs:
@@ -329,13 +331,48 @@ ALL_FILLABLE = (
 )
 
 
+def foods_in_note(note: str) -> list[str]:
+    """Cụm trong ô "nhu cầu khác" là món ăn (VD "bún bò", "hải sản") -> sở thích, không cần LLM.
+    Bỏ cụm phủ định ("không ăn cay") — đó là nhu cầu, không phải món muốn ăn."""
+    out = []
+    for part in re.split(r"[,;\n.]+|\s+(?:và|với|hoặc)\s+", note):
+        part = part.strip()
+        plain = _plain(part)
+        if not part or plain.startswith(NOT_FOOD):
+            continue
+        # "muốn ăn hải sản" -> "hải sản"
+        part = re.sub(
+            r"^(?:muốn|thích|thèm|cần)?\s*(?:được\s+)?(?:ăn|uống|thử)\s+", "", part, flags=re.I
+        )
+        if part and kind_of("", part) == "meal" and len(part) <= 40:
+            out.append(part)
+    return out
+
+
+# Cụm phủ định / dị ứng trong ô "nhu cầu khác": là nhu cầu, không phải món muốn ăn.
+NOT_FOOD = ("khong", "ko ", "k an", "tranh", "kieng", "di ung", "it ", "han che")
+
+
+def add_interests(form: TripForm, items: list[str]) -> TripForm:
+    have = [x.strip() for x in form.interests.split(",") if x.strip()]
+    for item in items:
+        if norm(item) not in {norm(h) for h in have}:
+            have.append(item)
+    return form.model_copy(update={"interests": ", ".join(have)})
+
+
 async def doc_loi_nhan(state: ItineraryState, ctx: Ctx) -> dict:
     form, sent = form_of(state), set(state.get("sent") or [])
+    foods = foods_in_note(form.needs_note)
+    if foods:  # món ghi ở ô "nhu cầu khác" luôn thành sở thích (tìm quán riêng, lịch phải có)
+        form = add_interests(form, foods)
+        state = {**state, "form": form.model_dump(mode="json")}
+    early = {"understood": [], **({"form": form.model_dump(mode="json")} if foods else {})}
     if not form.message.strip() and not form.needs_note.strip():
-        return {"understood": []}
+        return early
     blank = [f for f in ALL_FILLABLE if f not in sent or f in ("interests", "required_needs")]
     if not blank:
-        return {"understood": []}
+        return early
     await ctx.log("doc_loi_nhan", "step", "Đọc lời nhắn, điền ô còn trống")
     human = "# Ô còn trống\n" + ", ".join(blank) + "\n\n# Lời nhắn\n" + form.message
     if form.needs_note.strip():
@@ -344,7 +381,7 @@ async def doc_loi_nhan(state: ItineraryState, ctx: Ctx) -> dict:
         INTAKE, human, Extraction, OUTPUT_TOKENS["intake"], "doc_loi_nhan"
     )
     if out is None:
-        return {"understood": [], "llm_calls": calls, "usage": usage}
+        return {**early, "llm_calls": calls, "usage": usage}
     new, kept = apply_extracted(form, out, sent)
     await ctx.log("doc_loi_nhan", "finding", f"Nhận {len(kept)} ý có câu trích")
     return {

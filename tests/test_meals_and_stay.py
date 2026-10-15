@@ -263,3 +263,113 @@ def test_one_restaurant_per_meal_time_even_on_a_food_trip():
     lunch = [s for s in plan.stops if s.startswith("q")]
     assert lunch == ["q2"]  # giữ quán đúng món user nhắc
     assert not any("bữa trưa" in i for i in simulate(plan, places, m, w, [], False).issues)
+
+
+def test_off_hour_and_late_opening_meals_are_dropped():
+    from ailusion.itinerary.coordinator.simulate import drop_bad_meals
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "meal", stay: int = 45, **kw) -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Bảo tàng"
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=16.0,
+            lng=108.2,
+            stay_low=stay,
+            stay_high=stay,
+            **kw,
+        )
+
+    # Sushi 9:30 mới mở làm bữa sáng lúc 8:08 (chờ 82 phút); quán ăn lúc 15:00.
+    places = {
+        "sushi": place("sushi", hours={2: (570, 1320)}),
+        "v": place("v", "visit", 120),
+        "l": place("l"),
+        "v2": place("v2", "visit", 60),
+        "ktv": place("ktv"),
+        "v3": place("v3", "visit", 120),
+        "bb": place("bb", wanted="bún bò"),
+    }
+    ids = [*places, STAY]
+    m = {(a, b): 8.0 for a in ids for b in ids if a != b}
+    w = DayWindow(day=2, day_start="08:00", day_end="22:00", free_minutes=840)
+    plan = DayPlan(
+        id="L", day=2, leave_stay="08:00", stops=["sushi", "v", "l", "v2", "ktv", "v3", "bb"]
+    )
+    assert drop_bad_meals(plan, places, m, w, []) == 2
+    assert "sushi" not in plan.stops and "ktv" not in plan.stops
+    assert "bb" in plan.stops  # món user nhắc: giữ
+
+
+def test_one_meal_per_day_for_the_same_wanted_dish():
+    from ailusion.itinerary.coordinator.simulate import drop_extra_meals
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "meal", stay: int = 45, **kw) -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Bảo tàng"
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=16.0,
+            lng=108.2,
+            stay_low=stay,
+            stay_high=stay,
+            **kw,
+        )
+
+    # Bún bò cả sáng lẫn trưa (lịch Huế thật) -> giữ bữa sáng, bỏ bữa trưa (bước sau đặt quán khác).
+    places = {
+        "bb1": place("bb1", wanted="bún bò"),
+        "v": place("v", "visit", 150),
+        "bb2": place("bb2", wanted="bún bò"),
+    }
+    ids = [*places, STAY]
+    m = {(a, b): 5.0 for a in ids for b in ids if a != b}
+    w = DayWindow(day=2, day_start="08:00", day_end="22:00", free_minutes=840)
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["bb1", "v", "bb2"])
+    assert drop_extra_meals(plan, places, m, w, []) == 1
+    assert plan.stops == ["bb1", "v"]
+
+
+def test_long_day_with_only_restaurants_gets_places_to_visit():
+    from ailusion.itinerary.coordinator.simulate import fill_visits
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "visit", stay: int = 90) -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Bảo tàng"
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=16.0,
+            lng=108.2,
+            stay_low=stay,
+            stay_high=stay,
+        )
+
+    places = {"bb": place("bb", "meal", 45), "a": place("a"), "b": place("b"), "c": place("c")}
+    ids = [*places, STAY]
+    m = {(x, y): 10.0 for x in ids for y in ids if x != y}
+    w = DayWindow(day=2, day_start="08:00", day_end="20:45", free_minutes=675)
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["bb"])  # chỉ còn 1 quán bún bò
+    assert fill_visits(plan, places, m, w, ["a", "b", "c"], [], []) >= 2
+    assert sum(places[s].kind == "visit" for s in plan.stops) >= 2 and "bb" in plan.stops
+    short = DayWindow(day=3, day_start="08:00", day_end="11:00", free_minutes=180)
+    assert (
+        fill_visits(
+            DayPlan(id="S", day=3, leave_stay="08:00", stops=["bb"]),
+            places,
+            m,
+            short,
+            ["a"],
+            [],
+            [],
+        )
+        == 0
+    )  # ngày ngắn: không bù
