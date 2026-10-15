@@ -216,18 +216,21 @@ def test_same_name_prefers_the_reachable_place_near_the_city() -> None:
     assert best_match("Bà Nà Hills", [peak, tiny], center).place_id == "peak"  # type: ignore[union-attr]
 
 
-def test_late_fixed_time_extends_a_guessed_day_end() -> None:
+def test_no_early_return_rule_unless_the_user_sets_one() -> None:
     form = _form(must_visits=[{"name": "Cầu Rồng", "day": 1, "time": "21:00"}])
     profile = profile_trip(form, [], [])
-    assert profile.days[0].day_end == "22:30" and profile.days[1].day_end == "22:00"
-    assert any("Ngày 1 về muộn hơn (22:30)" in g for g in profile.guess)
+    assert profile.days[0].day_end == "23:30" and profile.days[1].day_end == "23:30"
+    assert not any(
+        "về" in g and "trước" in g for g in profile.guess
+    )  # không "đang giả định về sớm"
     own = _form(night_return_time="21:00", must_visits=[{"name": "x", "day": 1, "time": "21:00"}])
     assert profile_trip(own, [], []).days[0].day_end == "21:00"  # user tự đặt giờ về: giữ
 
 
 def test_free_time_before_a_fixed_time_is_not_an_error_and_dinner_waits() -> None:
     form = _form(must_visits=[{"name": "Cầu Rồng", "day": 1, "time": "21:00"}])
-    window = profile_trip(form, [], []).days[0]
+    # Ngày bắt đầu 15:00: chỉ cần bữa tối (đã có quán q).
+    window = profile_trip(form, [], []).days[0].model_copy(update={"day_start": "15:00"})
     places = {
         "a": _place("a", stay_low=60, stay_high=60, hours={1: (480, 1320)}),
         "q": _place("q", kind="meal", category="Nhà hàng", stay_low=60, stay_high=60),

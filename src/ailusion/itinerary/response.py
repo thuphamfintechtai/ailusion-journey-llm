@@ -739,7 +739,11 @@ def _day(
             type="back",
             start=hhmm(run.back),
             end=hhmm(run.back),
-            name="Về chỗ ở",
+            name=(
+                f"Về nghỉ đêm tại {stay_name}"
+                if plan.day <= form.num_nights
+                else f"Về {stay_name}, kết thúc chuyến"
+            ),
             travel_min=int(last_travel),
             **(leg(prev, STAY, run.back) if run.stops else {"travel_mode": mode}),
         )
@@ -881,6 +885,8 @@ def why_of(
         when = must_time_text(p.must_time)
         free = f" (tới sớm, tự do {stop.wait} phút)" if p.must_time and stop.wait else ""
         out.append("Bạn chọn chỗ này" + (f", muốn tới {when}" if when else "") + free)
+    if p.wanted and not p.must:
+        out.append(f"Đúng thứ bạn nhắc: {p.wanted}")
     if reason := purpose_reason(p):
         out.append(reason)
     if p.rating is not None and (p.rating_floor or 0) >= TRUSTED_FLOOR:

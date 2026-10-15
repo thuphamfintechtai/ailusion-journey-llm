@@ -15,7 +15,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..shared.context import Ctx
-from ..shared.form import GROUP_NAMES, MUST_LATE_MAX, PURPOSE_NAMES, hhmm, must_time_text
+from ..shared.form import (
+    GROUP_NAMES,
+    MUST_LATE_MAX,
+    PURPOSE_NAMES,
+    hhmm,
+    must_time_text,
+    required_meals,
+)
 from ..shared.llm import OUTPUT_TOKENS
 from ..shared.models import (
     STAY,
@@ -40,13 +47,15 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày; không chạm khung bị chặn. Khung "chỉ ăn uống" chỉ được xếp quán Q….
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
 5. Mỗi ngày ít nhất 3 lịch, không có 2 lịch giống hệt nhau.
-6. Bữa trưa (11:00–13:30) và bữa tối (18:00–20:00) nằm trong khung giờ thì chèn quán Q… vào đúng chỗ trong `stops`.
+6. Ngày nào cũng phải đủ bữa trong giờ rảnh: bữa sáng (06:30–10:00, ngày bắt đầu sớm thì quán Q… gần chỗ ở là chỗ ĐẦU TIÊN), bữa trưa (11:00–13:30), bữa tối (18:00–20:00). Mỗi bữa 1 quán Q… chèn đúng chỗ trong `stops`; thiếu bữa là lỗi. Dòng "Ngày …" ghi các bữa bắt buộc của ngày.
 7. Mỗi lịch tối đa 1 chỗ đi chơi của mỗi loại (cột "loại"): không xếp 2 spa, 2 chùa… trong cùng một ngày. Một mã không lặp lại trong cùng một lịch.
 8. Mỗi ngày CHỈ dùng mã trong danh sách của chính ngày đó. Hệ thống đã chia chỗ cho từng ngày (theo giờ mở cửa, gần nhau, khác loại) để các ngày không đi lại chỗ cũ.
 9. Chỗ ghi "đi buổi tối" (chợ đêm, phố đi bộ, bar, mở cửa từ chiều muộn) xếp cuối ngày, quanh bữa tối; không tới trước giờ mở cửa rồi đứng chờ (chờ quá 45 phút là lỗi).
 10. Chỗ ghi "BẮT BUỘC" là chỗ user tự chọn: MỌI lịch của ngày đó phải có. Có ghi "user muốn tới …" thì xếp các chỗ khác trước / sau sao cho tới đúng giờ đó (giờ cụ thể: không trễ quá {must_late} phút; buổi: bắt đầu trong buổi đó); tới sớm thì là thời gian tự do, nên xếp thêm chỗ khác / bữa tối trước nó cho đỡ phí thời gian.
 
 11. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày nên có mức tiền khác nhau quanh con số đó (một lịch thấp hơn, một lịch sát, một lịch cao hơn một chút), để hệ thống ghép được cả chuyến sát ngân sách user đưa. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
+
+12. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong cả chuyến, nên đưa vào nhiều lịch (quán thì vào đúng bữa trưa / tối).
 
 # Làm các lịch khác nhau thật sự
 
@@ -248,9 +257,10 @@ def planner_input(
         if d.meal_only_slots:
             extra.append("chỉ ăn uống " + ", ".join(d.meal_only_slots))
         weather = weather_text(state, d.day)
+        meals = required_meals(d.day_start, d.day_end)
         lines.append(
             f"# Ngày {d.day} ({form.day_date(d.day):%d/%m}): {d.day_start}–{d.day_end}, "
-            f"rảnh {d.free_minutes} phút"
+            f"rảnh {d.free_minutes} phút, bữa bắt buộc: {', '.join(meals) or 'không'}"
             + (f"; {'; '.join(extra)}" if extra else "")
             + (f"; {weather}" if weather else "")
         )
@@ -269,6 +279,7 @@ def planner_input(
                 + (" | hợp mục đích" if p.matches_purpose else "")
                 + (" | đi buổi tối" if p.kind != "meal" and opens_late(p, d.day) else "")
                 + must_text(p)
+                + (f" | user nhắc: {p.wanted}" if p.wanted and not p.must else "")
             )
         pairs = day_pairs(by_day[d.day], codes, matrix)
         if pairs:
@@ -278,6 +289,11 @@ def planner_input(
         f"\n# Nhóm khách: {profile.group} {GROUP_NAMES[profile.group]}; mục đích: "
         + (", ".join(PURPOSE_NAMES[p] for p in profile.purposes) or "chưa rõ")
     )
+    if form.needs_note.strip():
+        lines.append(
+            f"# Nhu cầu bắt buộc user tự ghi (phải tôn trọng khi chọn chỗ, quán): "
+            f"{form.needs_note.strip()}"
+        )
     per_day = day_target(state)
     if per_day:
         lines.append(

@@ -20,7 +20,15 @@ from typing import Any
 from ..shared.context import Ctx
 from ..shared.form import PURPOSE_KEYWORDS, TripForm
 from ..shared.math import km, median
-from ..shared.models import ItineraryState, Place, _plain, dump_places, form_of, profile_of
+from ..shared.models import (
+    ItineraryState,
+    Place,
+    _plain,
+    dump_places,
+    form_of,
+    profile_of,
+    wanted_words,
+)
 from ..shared.tools import add_places, add_stays, tool_ok
 
 ENOUGH_VISITS = 6
@@ -40,8 +48,9 @@ def place_calls(
     for purpose in purposes:
         for word in PURPOSE_KEYWORDS[purpose]:
             calls.append(("find_places", {**where, "query": word, "limit": 15}))
-    for word in [w.strip() for w in interests.split(",") if w.strip()][:3]:
-        calls.append(("find_places", {**where, "query": word, "limit": 15}))
+    # Thứ user nhắc (VD "bún bò"): tìm riêng từng thứ, nhiều kết quả hơn từ khoá mục đích.
+    for word in wanted_words(interests)[:5]:
+        calls.append(("find_places", {**where, "query": word, "limit": 20}))
     if needs:
         calls.append(("find_places", {**where, "needs": needs, "limit": 30}))
     return calls

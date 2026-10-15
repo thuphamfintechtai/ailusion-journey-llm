@@ -65,6 +65,8 @@ class Place:
     must_day: int | None = None
     must_time: str | None = None  # "HH:MM" | morning | afternoon | evening
     must_name: str | None = None  # tên user gõ, để báo lại
+    # Từ khoá user nhắc (ô sở thích / lời nhắn, VD "bún bò") mà chỗ này khớp; None = không khớp.
+    wanted: str | None = None
 
     @property
     def text(self) -> str:
@@ -109,6 +111,42 @@ def brand_key(name: str) -> tuple[str, ...]:
         words = words[:cut]
     plain = [_plain(w) for w in words]
     return tuple(w for w in plain if w not in GENERIC_MEAL_WORDS) or tuple(plain)
+
+
+# Nhãn sở thích chung của trợ lý chat (chat/trip_info.Interest): là loại, không phải thứ cụ thể
+# user đòi, nên không bắt lịch phải có.
+GENERIC_INTERESTS = {
+    "thien nhien",
+    "am thuc",
+    "van hoa",
+    "lich su",
+    "chup anh",
+    "check-in",
+    "check in",
+    "ca phe",
+    "nghi duong",
+    "phieu luu",
+    "bien",
+    "mua sam",
+    "ve dem",
+}
+
+
+def wanted_words(interests: str) -> list[str]:
+    """Thứ cụ thể user nhắc trong ô sở thích (đã gồm phần lấy từ lời nhắn, VD "bún bò"): bỏ
+    trùng, bỏ nhãn chung của trợ lý chat, giữ thứ tự."""
+    words = (w.strip() for w in (interests or "").split(","))
+    return list(dict.fromkeys(w for w in words if w and _plain(w) not in GENERIC_INTERESTS))
+
+
+def wanted_match(p: Place, words: list[str]) -> str | None:
+    """Từ khoá user nhắc có trong tên / loại / mô tả của chỗ (so bỏ dấu) -> trả từ khoá đó."""
+    text = " " + re.sub(r"\s+", " ", _plain(f"{p.name} {p.category} {p.summary}")) + " "
+    for w in words:
+        key = re.sub(r"\s+", " ", _plain(w)).strip()
+        if key and f" {key} " in text.replace(",", " ").replace(".", " "):
+            return w
+    return None
 
 
 def same_brand(a: Place, b: Place) -> bool:

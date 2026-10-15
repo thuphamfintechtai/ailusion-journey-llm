@@ -16,7 +16,7 @@ from ..shared.form import TripForm
 from ..shared.llm import OUTPUT_TOKENS, norm, quote_found
 from ..shared.models import ItineraryState, form_of
 
-INTAKE = """Bạn đọc lời nhắn tự do của người dùng trong ứng dụng lập lộ trình du lịch Việt Nam, để điền các ô form họ còn bỏ trống.
+INTAKE_TEMPLATE = """Bạn đọc lời nhắn tự do của người dùng trong ứng dụng lập lộ trình du lịch Việt Nam, để điền các ô form họ còn bỏ trống.
 
 # Quy tắc
 
@@ -31,14 +31,15 @@ INTAKE = """Bạn đọc lời nhắn tự do của người dùng trong ứng d
 - `group_type`: solo (một mình) · couple (cặp đôi) · friends (bạn bè) · colleagues (đồng nghiệp) · family (gia đình)
 - `kids_under_6`, `kids_6_12`, `seniors_65` (từ 65 tuổi), `wheelchair_users`: số người, ghi chữ số
 - `purposes` (mỗi mục đích một dòng, tối đa 2, theo thứ tự user nhắc): relax (nghỉ ngơi, thư giãn) · food (ăn uống, đặc sản) · culture (khám phá, văn hoá, lịch sử) · fun (vui chơi, sự kiện, về đêm) · adventure (phiêu lưu, leo núi, trekking) · shopping (mua sắm)
-- `interests`: từ khoá sở thích cụ thể, VD "hải sản, biển"
-- `priority`: comfort (đỡ mệt) · leisure (thong thả) · short_time (ít thời gian). "Tiết kiệm" KHÔNG phải ưu tiên (đã có ngân sách), không điền
+- `interests`: thứ cụ thể user muốn ăn / đi / làm, VD "bún bò", "hải sản", "cà phê view", "biển". Ô này LUÔN được đọc (kể cả khi user đã điền), phần lấy được sẽ cộng thêm vào. Mỗi thứ một dòng
+- `priority`: comfort (đỡ mệt) · leisure (thong thả) · short_time (ít thời gian) · many_places (đi được nhiều chỗ, "đi nhiều nơi"). "Tiết kiệm" KHÔNG phải ưu tiên (đã có ngân sách), không điền
 - `spend_style`: normal · unlimited ("không ngại chi thêm") · luxury_within_budget ("sang nhưng không vượt")
 - `arrival_time`, `departure_time`, `wake_time`, `night_return_time`: giờ như user viết, hoặc morning / afternoon / evening
 - `night_out`: true / false
 - `walking_level`: M1 (dạo 1–2 tiếng) · M2 (3 tiếng có dốc) · M3 (4–5 tiếng leo dốc) · M4 (cả ngày)
 - `budget`: số tiền như user viết; `budget_unit`: group_trip (cả đoàn cả chuyến) · person_trip (mỗi người cả chuyến) · person_day (mỗi người mỗi ngày)
 - `busy_slots`: lịch bận — ngày thứ mấy của chuyến, giờ bắt đầu, giờ xong, kèm câu trích. User không nói giờ (VD "ngày 2 có việc") thì để trống giờ, hệ thống sẽ hỏi lại
+- `required_needs`: nhu cầu BẮT BUỘC user nêu (trong "Nhu cầu bắt buộc user tự ghi" hoặc lời nhắn), mỗi nhu cầu một dòng, chỉ dùng mã: {need_codes}. Không có mã khớp thì bỏ (hệ thống tự giữ nguyên câu user làm lưu ý)
 - `must_visits`: địa điểm CỤ THỂ user muốn đi (tên riêng: "Bà Nà Hills", "chợ Hàn", "Bếp Hên"), kèm ngày thứ mấy và giờ nếu user nói (chép giờ như user viết: "7 giờ tối", "buổi sáng"). Loại chung chung ("đi biển", "ăn hải sản") thì KHÔNG phải địa điểm cụ thể
 
 # Ví dụ
@@ -61,7 +62,7 @@ ALLOWED: dict[str, tuple[str, ...] | None] = {
     "purposes": ("relax", "food", "culture", "fun", "adventure", "shopping"),
     "interests": None,
     # Không nhận "saving": đã có ngân sách, tiết kiệm thì user giảm ngân sách.
-    "priority": ("comfort", "leisure", "short_time"),
+    "priority": ("comfort", "leisure", "short_time", "many_places"),
     "spend_style": ("normal", "unlimited", "luxury_within_budget"),
     "arrival_time": None,
     "departure_time": None,
@@ -104,12 +105,54 @@ class ExtractedMust(BaseModel):
     quote: str
 
 
+# Mã nhu cầu đúng mã của MCP (`_nhu_cau.NHU_CAU`) -> nghĩa, để LLM đổi chữ user gõ ra mã lọc được.
+NEED_CODES: dict[str, str] = {
+    "wheelchair": "lối vào cho xe lăn",
+    "wheelchair_toilet": "nhà vệ sinh cho xe lăn",
+    "wheelchair_parking": "chỗ đỗ xe cho xe lăn",
+    "hearing_assist": "hỗ trợ người khiếm thính",
+    "kids": "phù hợp trẻ em",
+    "high_chair": "ghế cao cho bé",
+    "kids_menu": "thực đơn trẻ em",
+    "playground": "sân chơi",
+    "baby_changing": "bàn thay tã / phòng cho con bú",
+    "vegetarian": "có món chay",
+    "vegan": "có món thuần chay",
+    "late_night_food": "đồ ăn khuya",
+    "breakfast": "phục vụ bữa sáng",
+    "alcohol": "có đồ uống có cồn",
+    "private_room": "phòng ăn riêng",
+    "car_parking": "có chỗ đỗ ô tô",
+    "free_parking": "đỗ xe miễn phí",
+    "card_payment": "thanh toán thẻ",
+    "pets": "cho mang chó theo",
+    "wifi": "Wi-Fi",
+    "restroom": "có nhà vệ sinh",
+    "luggage_storage": "giữ hộ hành lý",
+    "outdoor_seating": "chỗ ngồi ngoài trời",
+    "reservations": "nhận đặt chỗ",
+    "groups": "hợp đi nhóm đông",
+    "quiet": "yên tĩnh",
+}
+
+
+INTAKE = INTAKE_TEMPLATE.replace(
+    "{need_codes}", " · ".join(f"{c} ({v})" for c, v in NEED_CODES.items())
+)
+
+
+class ExtractedNeed(BaseModel):
+    code: str = Field(description="Mã nhu cầu trong danh sách cho phép")
+    quote: str = Field(description="Câu user viết, chép nguyên văn")
+
+
 class Extraction(BaseModel):
     """Đầu ra LLM bước 2."""
 
     items: list[Extracted] = Field(default_factory=list)
     busy_slots: list[ExtractedBusy] = Field(default_factory=list)
     must_visits: list[ExtractedMust] = Field(default_factory=list)
+    required_needs: list[ExtractedNeed] = Field(default_factory=list)
 
 
 def parse_clock(text: str) -> str | None:
@@ -167,7 +210,14 @@ def apply_extracted(
     purposes: list[str] = []
     for item in extraction.items:
         field, value = item.field, item.value.strip()
-        if field not in ALLOWED or field in sent or not quote_found(item.quote, form.message):
+        # Sở thích luôn được cộng thêm từ lời nhắn (ô đã điền thì nối vào, không ghi đè); ô khác
+        # user đã điền thì giữ nguyên.
+        appendable = field == "interests"
+        if (
+            field not in ALLOWED
+            or (field in sent and not appendable)
+            or not quote_found(item.quote, form.message)
+        ):
             continue
         allowed = ALLOWED[field]
         if allowed is not None and value not in allowed:
@@ -187,6 +237,11 @@ def apply_extracted(
             if parsed is None:
                 continue
             data[field] = parsed
+        elif field == "interests":
+            have = [w.strip() for w in (data.get("interests") or "").split(",") if w.strip()]
+            new = [w.strip() for w in value.split(",") if w.strip()]
+            low = {norm(w) for w in have}
+            data["interests"] = ", ".join(have + [w for w in new if norm(w) not in low])
         elif field == "night_out":
             data[field] = value == "true"
         else:
@@ -208,6 +263,15 @@ def apply_extracted(
             kept.append({"field": "busy_slots", "value": f"ngày {b.day} {when}", "quote": b.quote})
         if busy:
             data["busy_slots"] = busy
+    # Nhu cầu bắt buộc: luôn cộng thêm (không ghi đè ô đã chọn), mã phải nằm trong danh sách và
+    # câu trích phải có trong lời nhắn hoặc ô "nhu cầu khác".
+    said = f"{form.message}\n{form.needs_note}"
+    needs = list(data.get("required_needs") or [])
+    for n in extraction.required_needs:
+        if n.code in NEED_CODES and quote_found(n.quote, said) and n.code not in needs:
+            needs.append(n.code)
+            kept.append({"field": "required_needs", "value": NEED_CODES[n.code], "quote": n.quote})
+    data["required_needs"] = needs
     if extraction.must_visits and "must_visits" not in sent:
         musts = []
         for m in extraction.must_visits:
@@ -258,18 +322,21 @@ ALL_FILLABLE = (
     "budget",
     "busy_slots",
     "must_visits",
+    "required_needs",
 )
 
 
 async def doc_loi_nhan(state: ItineraryState, ctx: Ctx) -> dict:
     form, sent = form_of(state), set(state.get("sent") or [])
-    if not form.message.strip():
+    if not form.message.strip() and not form.needs_note.strip():
         return {"understood": []}
-    blank = [f for f in ALL_FILLABLE if f not in sent]
+    blank = [f for f in ALL_FILLABLE if f not in sent or f in ("interests", "required_needs")]
     if not blank:
         return {"understood": []}
     await ctx.log("doc_loi_nhan", "step", "Đọc lời nhắn, điền ô còn trống")
     human = "# Ô còn trống\n" + ", ".join(blank) + "\n\n# Lời nhắn\n" + form.message
+    if form.needs_note.strip():
+        human += "\n\n# Nhu cầu bắt buộc user tự ghi\n" + form.needs_note.strip()
     out, calls, usage = await ctx.ask(
         INTAKE, human, Extraction, OUTPUT_TOKENS["intake"], "doc_loi_nhan"
     )

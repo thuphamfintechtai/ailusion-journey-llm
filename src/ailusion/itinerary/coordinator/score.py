@@ -15,7 +15,7 @@ import math
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import to_minutes
+from ..shared.form import required_meals
 from ..shared.math import km, median, pareto_tiers
 from ..shared.models import (
     STAY,
@@ -234,6 +234,9 @@ def varied_meals(meals: list[Place]) -> list[Place]:
 
 
 MEALS_PER_CUISINE = 2
+MEALS_PER_DAY = 3  # sáng, trưa, tối: đủ ngần này quán mỗi ngày thì mỗi ngày có danh sách quán riêng
+WANTED_MEALS = 3  # mỗi món user nhắc: giữ tối đa ngần này quán trong danh sách đưa Planner
+WANTED_VISITS = 4  # chỗ chơi khớp thứ user nhắc giữ chắc trong danh sách
 # Quán cùng loại món với quán đã có của ngày: coi như xa thêm ngần này phút khi chia ngày.
 SAME_CUISINE_MIN = 15
 
@@ -256,9 +259,9 @@ def split_by_day(
     các mỏ neo trước nhất (phút đi gần nhất tới mỏ neo đã có × hệ số nổi tiếng 0,5–1), để mỗi ngày
     là một vùng. Các chỗ còn lại (nổi tiếng trước) vào ngày có phút đi TRUNG BÌNH tới các chỗ đã
     có của ngày ít nhất, miễn là ngày đó mở cửa, chưa có chỗ cùng loại và chưa đầy. Không ngày nào
-    nhận được thì nới luật cùng loại, rồi nới số lượng. Quán ăn: đủ nhiều (≥ 2 quán mỗi ngày) thì
-    vào ngày có cụm chỗ chơi gần nhất; ít thì ngày nào cũng dùng chung. `minutes`: "id_a|id_b" ->
-    phút đi (ma trận bước 8); thiếu cặp thì ước theo đường chim bay.
+    nhận được thì nới luật cùng loại, rồi nới số lượng. Quán ăn: đủ nhiều (≥ `MEALS_PER_DAY` quán
+    mỗi ngày) thì vào ngày có cụm chỗ chơi gần nhất; ít thì ngày nào cũng dùng chung.
+    `minutes`: "id_a|id_b" -> phút đi (ma trận bước 8); thiếu cặp thì ước theo đường chim bay.
     """
     visits = sorted((p for p in pool if p.kind != "meal"), key=lambda p: -(p.reviews or 0))
     meals = sorted((p for p in pool if p.kind == "meal"), key=lambda p: -(p.reviews or 0))
@@ -329,7 +332,7 @@ def split_by_day(
     for m in pinned_meals:
         out[m.must_day].append(m)  # type: ignore[index]
     meals = sorted((m for m in meals if m not in pinned_meals), key=lambda m: not m.must)
-    if len(meals) >= 2 * len(days):
+    if len(meals) >= MEALS_PER_DAY * len(days):
         per_meal = math.ceil(len(meals) / len(days))
         taken = {d: 0 for d in days}
         for m in meals:
@@ -496,6 +499,7 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
             "P2": lambda s: ride.get(s.name) or 10**9,
             "P3": lambda s: -(s.rating_floor or 0),
             "P4": lambda s: ride.get(s.name) or 10**9,
+            "P5": lambda s: ride.get(s.name) or 10**9,  # đi nhiều chỗ: chỗ ở gần các điểm
         }[profile.group]
         chosen_stay = sorted(first, key=key)[0]
         # Có ngân sách: lấy chỗ ở có tiền phòng cả chuyến gần `STAY_TARGET_SHARE` ngân sách nhất
@@ -537,15 +541,28 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     for p in ordered_visits:
         per[p.group] = per.get(p.group, 0) + 1
         (first if per[p.group] <= type_cap(p.group, len(profile.days)) else rest).append(p)
-    ordered_visits = [p for p in first + rest if p.must] + [p for p in first + rest if not p.must]
+    ordered_visits = (
+        [p for p in first + rest if p.must]
+        + [p for p in first + rest if not p.must and p.wanted]
+        + [p for p in first + rest if not p.must and not p.wanted]
+    )
     # Mỗi chuỗi quán 1 chi nhánh; đa dạng loại món trước khi cắt bớt. Quán user chọn luôn giữ,
     # chi nhánh khác cùng chuỗi thì bỏ.
     must_meals = [m for m in meals if m.must]
     others = [m for m in meals if not m.must and not any(same_brand(m, k) for k in must_meals)]
-    ordered_meals = must_meals + varied_meals(one_per_brand(others, center))
+    # Quán khớp thứ user nhắc (VD bún bò): mỗi thứ tối đa `WANTED_MEALS` quán, đứng ngay sau quán
+    # user chọn để chắc vào danh sách.
+    wanted_meals: list[Place] = []
+    for word in dict.fromkeys(m.wanted for m in others if m.wanted):
+        same = [m for m in one_per_brand([m for m in others if m.wanted == word], center)]
+        wanted_meals += sorted(same, key=lambda m: -(m.rating_floor or 0))[:WANTED_MEALS]
+    rest_meals = [m for m in others if m not in wanted_meals]
+    ordered_meals = must_meals + wanted_meals + varied_meals(one_per_brand(rest_meals, center))
     # Ít nhất 2 quán riêng mỗi ngày (bước chia ngày cần vậy mới không phải dùng chung quán).
+    # Đủ quán cho mọi bữa bắt buộc (sáng / trưa / tối theo giờ rảnh từng ngày).
     n_meal_slots = max(
-        sum(1 + (to_minutes(d.day_end) >= 19 * 60) for d in profile.days), 2 * len(profile.days)
+        sum(len(required_meals(d.day_start, d.day_end)) for d in profile.days),
+        2 * len(profile.days),
     )
     shortlist = ordered_visits[: MAX_MATRIX_POINTS - 1 - min(len(ordered_meals), n_meal_slots + 3)]
     shortlist += ordered_meals[: min(len(ordered_meals), n_meal_slots + 3)]
@@ -586,16 +603,19 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     caps = capacity(profile.days, typical_stay, typical_hop)
     musts = [p for p in shortlist if p.must]
     notes += moved_closed_days(musts, [d.day for d in profile.days], form)
+    # Giữ chắc trong danh sách: chỗ user chọn + chỗ khớp thứ user nhắc (không qua chia tầng).
+    kept = musts + [p for p in shortlist if not p.must and p in wanted_meals]
+    kept += [p for p in shortlist if not p.must and p.wanted and p.kind == "visit"][:WANTED_VISITS]
     pool, tiers = pick_pool(
-        [p for p in shortlist if p.kind == "visit" and not p.must],
-        [p for p in shortlist if p.kind == "meal" and not p.must],
+        [p for p in shortlist if p.kind == "visit" and p not in kept],
+        [p for p in shortlist if p.kind == "meal" and p not in kept],
         # Mỗi ngày thêm 2 chỗ dư để Planner có lựa chọn khi xếp 3 lịch khác nhau.
         sum(caps) + 2 * len(profile.days),
         n_meal_slots,
         center,
         per_group=len(profile.days),
     )
-    pool = musts + pool
+    pool = kept + pool
     # Đặt mã theo độ nổi tiếng (số review giảm dần): Planner hay chọn các mã đầu danh sách, nên
     # chỗ nổi tiếng (Cầu Vàng, Bà Nà…) đứng trước spa / quán nhỏ có sao cao nhưng ít người biết.
     pool = sorted(pool, key=lambda p: (p.kind == "meal", -(p.reviews or 0)))

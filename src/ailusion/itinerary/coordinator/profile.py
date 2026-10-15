@@ -25,7 +25,6 @@ from ..shared.form import (
     HUB_TRAVEL_MIN,
     LOW_BUDGET_RATIO,
     LOW_FREE_MINUTES,
-    MUST_EVENING_STAY,
     PRIORITY_GROUP,
     SORT_ORDER,
     TABLE_A,
@@ -79,15 +78,9 @@ def profile_trip(
     needs_care = bool(form.kids_under_6 or form.seniors_65 or form.wheelchair_users)
     required = list(dict.fromkeys([*form.required_needs, *(n for r in rows for n in r[2])]))
     nice = list(dict.fromkeys(n for r in rows for n in r[3] if n not in required))
-    returns = [r[4] for r in rows if r[4]]
-    if form.night_return_time:
-        night_return = clock(form.night_return_time) or DEFAULT_NIGHT_RETURN
-    elif returns:
-        night_return = min(returns)
-    else:
-        night_return = DEFAULT_NIGHT_RETURN
-        if not form.night_out:
-            guess.append(f"Tối về chỗ ở trước {DEFAULT_NIGHT_RETURN}")
+    # Giờ về buổi tối chỉ theo user điền; không tự đặt luật về sớm (kể cả đoàn có trẻ nhỏ: cột
+    # "Tối về trước" của bảng A không còn áp).
+    night_return = clock(form.night_return_time) or DEFAULT_NIGHT_RETURN
 
     # Phần 2 — giờ rảnh từng ngày
     days: list[DayWindow] = []
@@ -116,17 +109,6 @@ def profile_trip(
                     departure = DEFAULT_DEPARTURE
                     day_guess.append(f"Ngày {d} về lúc {DEFAULT_DEPARTURE}")
                 end = min(end, to_minutes(departure) - CHECKIN_MIN - DEPARTURE_BUFFER_MIN - hub)
-        # Chỗ user hẹn giờ cụ thể buổi tối (VD Cầu Rồng 21:00): giờ về là số tạm thì nới cho kịp
-        # ở đó `MUST_EVENING_STAY` phút rồi về. Ngày cuối có giờ ra bến thì không nới.
-        if not form.night_return_time and not form.night_out and d != form.num_days:
-            late = [
-                to_minutes(m.time) + MUST_EVENING_STAY
-                for m in form.must_visits
-                if m.day == d and m.time and m.time[0].isdigit()
-            ]
-            if late and max(late) > end:
-                end = min(max(late), 23 * 60 + 30)
-                day_guess.append(f"Ngày {d} về muộn hơn ({hhmm(end)}) cho kịp giờ bạn hẹn")
         blocked, meal_only = [], []
         busy_minutes = 0
         for slot in form.busy_slots:
