@@ -216,13 +216,20 @@ def test_same_name_prefers_the_reachable_place_near_the_city() -> None:
     assert best_match("Bà Nà Hills", [peak, tiny], center).place_id == "peak"  # type: ignore[union-attr]
 
 
-def test_no_early_return_rule_unless_the_user_sets_one() -> None:
+def test_evening_return_is_asked_and_defaults_to_20h() -> None:
+    from ailusion.itinerary.coordinator.profile import QUESTIONS
+
     form = _form(must_visits=[{"name": "Cầu Rồng", "day": 1, "time": "21:00"}])
     profile = profile_trip(form, [], [])
-    assert profile.days[0].day_end == "23:30" and profile.days[1].day_end == "23:30"
-    assert not any(
-        "về" in g and "trước" in g for g in profile.guess
-    )  # không "đang giả định về sớm"
+    # Không nhập giờ về tối: bước 4 hỏi (H6); chưa trả lời thì tạm về lúc 20:00.
+    assert "H6" in profile.questions
+    assert profile.days[1].day_end == "20:45"  # đi chơi tới 20:00 + 45 phút đường về
+    # Ngày 1 hẹn Cầu Rồng lúc 21:00: kéo tới sau giờ hẹn (21:00 + 90 phút), không thành "về trễ".
+    assert profile.days[0].day_end == "22:30"
+    unsure = dict(QUESTIONS["H6"]["choices"])["Chưa biết (để 20h)"]
+    assert unsure == {"night_return_time": "20:45"}
+    late = profile_trip(_form(night_out=True), [], [])
+    assert "H6" not in late.questions and late.days[0].day_end == "23:30"
     own = _form(night_return_time="21:00", must_visits=[{"name": "x", "day": 1, "time": "21:00"}])
     assert profile_trip(own, [], []).days[0].day_end == "21:00"  # user tự đặt giờ về: giữ
 

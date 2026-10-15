@@ -66,7 +66,7 @@ class DecisionOutput(BaseModel):
 
 
 # Mã nội bộ không được lộ ra lời giải thích: mã lịch "N1-L3", "N2-D1" và mã phương án "PA1".
-INTERNAL_CODE = re.compile(r"\b(?:N\d+-[A-Z]\w*|PA\d)\b")
+INTERNAL_CODE = re.compile(r"\b(?:(?:V\d+-)?N\d+-[A-Z]\w*|PA\d)\b")
 INTERNAL_PAIR = re.compile(r"N(\d+)-\w+ trước N\d+-\w+:")
 
 

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,6 +58,17 @@ class Ctx:
         self.thread_id = config["configurable"]["thread_id"]
         # Node đang chạy: ghi kèm mỗi lượt gọi tool vào nhật ký, để web hiện chip nguồn đã dùng.
         self.node = node
+        # Nhánh song song (VD "pa2" của node lap_phuong_an): mọi nhật ký ghi "node:nhánh" để web
+        # hiện mỗi nhánh một làn, không lẫn bước của các nhánh với nhau.
+        self.lane = ""
+
+    def branch(self, node: str, lane: str) -> Ctx:
+        c = copy.copy(self)
+        c.node, c.lane = node, lane
+        return c
+
+    def _node(self, node: str) -> str:
+        return f"{self.node}:{self.lane}" if self.lane else node
 
     async def tool(self, name: str, **args: Any) -> tuple[Any, dict[str, Any]]:
         """Gọi 1 tool MCP -> (kết quả, dòng nhật ký). Tool hỏng thì trả lỗi, không ném lỗi."""
@@ -104,11 +116,11 @@ class Ctx:
         return (parsed if isinstance(parsed, schema) else schema.model_validate(parsed)), 1, usage
 
     async def log(self, node: str, kind: str, text: str, **data: Any) -> None:
-        await agent_log.publish(self.thread_id, node=node, kind=kind, text=text, **data)
+        await agent_log.publish(self.thread_id, node=self._node(node), kind=kind, text=text, **data)
 
     async def _trace(self, kind: str, text: str, node: str = "", **data: Any) -> None:
         """Nhật ký lượt gọi tool / lỗi LLM. Ghi nhật ký hỏng thì bỏ qua, không làm hỏng lộ trình."""
-        node = node or self.node
+        node = self._node(node or self.node)
         if not node:
             return
         try:

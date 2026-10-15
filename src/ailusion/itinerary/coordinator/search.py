@@ -13,12 +13,14 @@ Chỗ user gọi tên (`must_visits`) tra riêng (`find_musts`): DB trước, r�
 
 from __future__ import annotations
 
+import copy
+import math
 import re
 from datetime import timedelta
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import PURPOSE_KEYWORDS, TripForm
+from ..shared.form import CAFE_REST_PRICE, HOTEL_REST_SHARE, PURPOSE_KEYWORDS, TripForm
 from ..shared.math import km, median
 from ..shared.models import (
     ItineraryState,
@@ -27,9 +29,11 @@ from ..shared.models import (
     dump_places,
     form_of,
     profile_of,
+    wanted_match,
     wanted_words,
 )
 from ..shared.tools import add_places, add_stays, tool_ok
+from .score import STAY_TARGET_SHARE
 
 ENOUGH_VISITS = 6
 NEARBY_KM = 10
@@ -40,20 +44,41 @@ def place_calls(
     where: dict[str, Any], purposes: list[str], interests: str, needs: list[str]
 ) -> list[tuple[str, dict[str, Any]]]:
     """Các lượt tìm chỗ chơi / quán (đọc DB) cho một vùng: `where` là {"destination": …} hoặc
-    {"lat", "lng", "radius_km"}. Gồm loại chung, từ khoá của mục đích, sở thích, nhu cầu."""
+    {"lat", "lng", "radius_km"} (có thể kèm "sort_by"). Gồm loại chung, từ khoá của mục đích, sở
+    thích, nhu cầu. Mỗi lượt lấy tới trần của tool (30 chỗ)."""
     calls: list[tuple[str, dict[str, Any]]] = [
         ("find_places", {**where, "category": "Điểm thu hút khách du lịch", "limit": 30}),
         ("find_places", {**where, "category": "Nhà hàng", "limit": 30}),
     ]
     for purpose in purposes:
         for word in PURPOSE_KEYWORDS[purpose]:
-            calls.append(("find_places", {**where, "query": word, "limit": 15}))
-    # Thứ user nhắc (VD "bún bò"): tìm riêng từng thứ, nhiều kết quả hơn từ khoá mục đích.
+            calls.append(("find_places", {**where, "query": word, "limit": 25}))
+    # Thứ user nhắc (VD "bún bò"): tìm riêng từng thứ.
     for word in wanted_words(interests)[:5]:
-        calls.append(("find_places", {**where, "query": word, "limit": 20}))
+        calls.append(("find_places", {**where, "query": word, "limit": 30}))
     if needs:
         calls.append(("find_places", {**where, "needs": needs, "limit": 30}))
     return calls
+
+
+# 3 phương án cần nhiều chỗ khác nhau (tool không có phân trang): ngoài lượt tìm theo độ đông
+# khách, tìm thêm theo sao cao, và quét 4 hướng quanh trung tâm (mỗi hướng một vòng tròn). Chỉ đọc
+# DB, không tốn quota.
+SWEEP_KM = 6
+SWEEP_RADIUS_KM = 5
+
+
+def wider_wheres(dest: str, center: list[float] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = [{"destination": dest, "sort_by": "rating", "min_reviews": 30}]
+    if center:
+        lat, lng = center
+        dlat = SWEEP_KM / 111
+        dlng = SWEEP_KM / (111 * max(0.2, math.cos(math.radians(lat))))
+        out += [
+            {"lat": lat + a, "lng": lng + b, "radius_km": SWEEP_RADIUS_KM}
+            for a, b in ((dlat, 0), (-dlat, 0), (0, dlng), (0, -dlng))
+        ]
+    return out
 
 
 MUST_MATCH = 0.6
@@ -81,6 +106,39 @@ def name_match(wanted: str, name: str) -> float:
     return len(want & have) / len(want) if want else 0.0
 
 
+# Chữ chỉ loại chỗ: tên tìm được có thêm loại mà user không gõ là chỗ KHÁC cùng tên (user gõ
+# "Làng chài Mũi Né" -> "Nhà Hàng Làng Chài Mũi Né"; "Bãi Ông Địa" -> "Ăn Vặt Bãi Đá Ông Địa").
+TYPE_WORDS = (
+    "nha hang",
+    "quan an",
+    "quan",
+    "an vat",
+    "restaurant",
+    "cafe",
+    "ca phe",
+    "coffee",
+    "bistro",
+    "bbq",
+    "khach san",
+    "hotel",
+    "homestay",
+    "resort",
+    "villa",
+    "nha nghi",
+    "spa",
+    "cua hang",
+    "shop",
+    "tour",
+)
+
+
+def other_type(wanted: str, p: Place) -> bool:
+    """Chỗ `p` thuộc loại khác chỗ user gọi tên: tên có chữ chỉ loại (nhà hàng, quán, khách
+    sạn…) mà tên user gõ không có. ("Bếp Hên" là quán dù tên không có chữ "quán": vẫn khớp.)"""
+    want, name = f" {_plain(wanted)} ", f" {_plain(p.name)} "
+    return any(f" {w} " in name and f" {w} " not in want for w in TYPE_WORDS)
+
+
 FAMOUS_SHARE = 0.3  # chỗ cùng tên có ≥ ngần này × số review của chỗ nổi tiếng nhất mới được xét
 
 
@@ -90,7 +148,7 @@ def best_match(
     """Chỗ khớp tên nhất (đủ `MUST_MATCH`). Nhiều chỗ khớp như nhau và đều nổi tiếng thì lấy chỗ
     gần trung tâm điểm đến nhất: Google có cả ghim "Ba Na Hills" trên đỉnh núi (xe không tới,
     phút đi sai hẳn) lẫn "Sun World Bà Nà Hills" ở ga cáp treo — lấy chỗ đi tới được."""
-    scored = [(name_match(wanted, p.name), p) for p in found]
+    scored = [(name_match(wanted, p.name), p) for p in found if not other_type(wanted, p)]
     top = max((sc for sc, _ in scored), default=0.0)
     if top < MUST_MATCH:
         return None
@@ -100,6 +158,34 @@ def best_match(
     if center is None or len(famous) == 1:
         return max(famous, key=lambda p: p.reviews or 0)
     return min(famous, key=lambda p: km(center, (p.lat, p.lng)))
+
+
+WANTED_SEARCH_MAX = 3  # số thứ user nhắc được tìm thêm ngoài DB (SerpApi tốn 1 lượt mỗi thứ)
+
+
+async def find_wanted(
+    form: TripForm, places: dict[str, Place], ctx: Ctx, center: Any
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Thứ user nhắc (VD "bún bò") mà DB không có chỗ nào khớp: tìm Vietmap (miễn phí) quanh
+    điểm đến, vẫn không có thì SerpApi. Không thấy ở đâu thì ghi chú cho user."""
+    dest, logs = form.destination, []
+
+    def lacking(words: list[str]) -> list[str]:
+        return [w for w in words if not any(wanted_match(p, [w]) for p in places.values())]
+
+    missing = lacking(wanted_words(form.interests)[:WANTED_SEARCH_MAX])
+    for name, args_of in (
+        ("find_nearby", lambda w: {"query": w, **vietmap_near(center, dest), "limit": 10}),
+        ("search_places", lambda w: {"query": f"{w} {dest}", "limit": 10}),
+    ):
+        if not missing:
+            break
+        results, more = await ctx.many([(name, args_of(w)) for w in missing])
+        logs += more
+        for data in results:
+            add_places(places, data, name)
+        missing = lacking(missing)
+    return logs, [f"Không tìm thấy chỗ có “{w}” ở {dest}." for w in missing]
 
 
 async def find_musts(
@@ -174,13 +260,62 @@ def checked_center(
     )
 
 
+# Chỗ ở theo ngân sách: tìm thêm quanh giá phòng mục tiêu (phần ngân sách dành cho chỗ ở / đêm /
+# phòng), không thì "đáng tiền" chỉ ra phòng 200–400 nghìn và cả chuyến tiêu thấp hơn ngân sách.
+STAY_BAND = (0.6, 1.4)
+
+
+def stay_band_calls(
+    form: TripForm, trip_budget: int | None, needs: list[str]
+) -> list[tuple[str, dict[str, Any]]]:
+    if not trip_budget or not form.num_nights or form.stay_booked:
+        return []
+    rooms = -(-form.group_size // 2)
+    target = trip_budget * STAY_TARGET_SHARE / form.num_nights / rooms
+    return [
+        (
+            "find_stays",
+            {
+                "destination": form.destination,
+                "min_price_vnd": int(target * STAY_BAND[0]),
+                "max_price_vnd": int(target * STAY_BAND[1]),
+                "sort_by": "rating",
+                "limit": 20,
+                **({"needs": needs} if needs else {}),
+            },
+        )
+    ]
+
+
+# Chỗ nghỉ trưa dọc đường (TripForm.nap): quán cà phê sao cao, hoặc khách sạn (nghỉ theo giờ).
+REST_CAFES = {"category": "Quán cà phê", "sort_by": "rating", "min_reviews": 50, "limit": 30}
+
+
+def add_rest_spots(
+    places: dict[str, Place], cafes: dict[str, Place], stays: dict[str, Place], form: TripForm
+) -> None:
+    """Thêm chỗ nghỉ trưa vào `places` với kind "rest" (không vào danh sách chỗ chơi / quán ăn)."""
+    for pid, q in cafes.items():
+        if pid not in places:
+            q.kind, q.rest_of, q.price = "rest", "cafe", CAFE_REST_PRICE
+            places[pid] = q
+    if form.nap == "hotel":
+        rooms = -(-form.group_size // 2)
+        for pid, s in stays.items():
+            if s.price and pid not in places:
+                rest = copy.copy(s)
+                rest.kind, rest.rest_of = "rest", "hotel"
+                rest.price = int(s.price * HOTEL_REST_SHARE * rooms / form.group_size)
+                places[pid] = rest
+
+
 async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
     form, profile = form_of(state), profile_of(state)
     dest = form.destination
     start, end = form.start_date.isoformat(), form.end_date.isoformat()
-    calls = place_calls(
-        {"destination": dest}, profile.purposes, form.interests, profile.required_needs
-    )
+    calls = []
+    for where in [{"destination": dest}, *wider_wheres(dest, state.get("center"))]:
+        calls += place_calls(where, profile.purposes, form.interests, profile.required_needs)
     calls += [
         (
             "find_festivals",
@@ -194,6 +329,12 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
                 "limit": 20,
                 **({"needs": profile.required_needs} if profile.required_needs else {}),
             },
+        ),
+        *stay_band_calls(form, profile.trip_budget, profile.required_needs),
+        *(
+            [("find_places", {"destination": dest, **REST_CAFES})]
+            if form.nap in ("auto", "cafe") and any(d.nap for d in profile.days)
+            else []
         ),
         (
             "weather_forecast",
@@ -224,8 +365,11 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
     festivals: list[str] = []
     festival_dates: list[dict[str, Any]] = []  # lễ hội có ngày, để gắn vào từng ngày đi
     alerts: list[str] = []
-    for (name, _args), data in zip(calls, results, strict=True):
-        if name == "find_places":
+    rest: dict[str, Place] = {}
+    for (name, args), data in zip(calls, results, strict=True):
+        if name == "find_places" and args.get("category") == REST_CAFES["category"]:
+            add_places(rest, data, name)
+        elif name == "find_places":
             add_places(places, data, name)
         elif name in ("find_stays", "search_hotels"):
             add_stays(stays, data, name)
@@ -243,6 +387,8 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
             for e in data.get("events") or []:
                 if str(e.get("alert_level", "")).lower() == "red" and e.get("is_current", True):
                     alerts.append(f"{e.get('name') or e.get('type')} (mức đỏ)")
+
+    add_rest_spots(places, rest, stays, form)
 
     # Nguồn tốn quota chỉ gọi khi dữ liệu đã lưu thiếu: sự kiện (Tavily) khi DB không có lễ
     # hội nào; giá phòng theo ngày (SerpApi) khi chỗ ở trong DB chưa đủ chỗ có giá.
@@ -305,6 +451,8 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
         for data in more:
             add_places(places, data, "search_places")
         logs += more_logs
+    wanted_logs, wanted_notes = await find_wanted(form, places, ctx, center)
+    logs += wanted_logs
     must_logs, must_notes = await find_musts(
         form,
         places,
@@ -324,6 +472,7 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
     return {
         "notes": list(state.get("notes") or [])
         + must_notes
+        + wanted_notes
         + ([center_note] if center_note else []),
         "center": center,
         "places": dump_places(places),

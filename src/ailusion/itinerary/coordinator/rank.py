@@ -141,6 +141,7 @@ def fit_budget(
     want: int = 3,
     shared: set[str] | None = None,
     wanted: dict[str, str] | None = None,
+    avoid: set[str] | None = None,
 ) -> list[tuple[list[DayPlan], int | None]]:
     """Tối đa `want` phương án (mỗi ngày 1 lịch), KHÁC NHAU thật sự.
 
@@ -150,7 +151,8 @@ def fit_budget(
     để 3 phương án cho 3 lựa chọn khác nhau chứ không chỉ lệch 1 lịch. `shared`: chỗ phương án nào
     cũng phải có (user chọn), không tính là trùng. `budget` None: bỏ qua luật tiền.
     `wanted`: place_id -> thứ user nhắc (VD "bún bò"); phương án thiếu thứ nào xếp sau (ngay sau
-    luật không lặp chỗ, trước luật tiền)."""
+    luật không lặp chỗ, trước luật tiền). `avoid`: chỗ chơi phương án trước (vòng trước) đã dùng;
+    phương án đầu tiên trả về cũng ưu tiên ít trùng với chúng (ngay sau luật ngân sách)."""
     shared = shared or set()
     wanted = wanted or {}
     asked = set(wanted.values())
@@ -175,9 +177,10 @@ def fit_budget(
         if budget and total is None:
             continue
         seen: set[str] = set()
-        repeats = 0
+        repeats = meal_repeats = 0
         for p in combo:
             repeats += sum(s in seen and places_kind.get(s) != "meal" for s in p.stops)
+            meal_repeats += sum(s in seen and places_kind.get(s) == "meal" for s in p.stops)
             seen |= set(p.stops)
         visits = {s for s in seen if places_kind.get(s) != "meal" and s not in shared}
         missing = len(asked - {wanted[s] for s in seen if s in wanted})
@@ -193,15 +196,21 @@ def fit_budget(
                 "combo": list(combo),
                 "total": total,
                 "visits": visits,
-                "base": (repeats, missing, round(off, 3)),
+                # Quán lặp giữa các ngày (VD cùng 1 quán ngày 1 và ngày 2): xét sau luật tiền.
+                "base": (repeats, missing, round(off, 3), meal_repeats),
                 "rest": (round(max(0.0, spread - BUDGET_BAND), 2), ranks),
             }
         )
     if not rows:
         return []
-    picked = [min(rows, key=lambda r: (r["base"], r["rest"]))]
+    avoid = (avoid or set()) - shared
+
+    def avoided(r: dict[str, Any]) -> float:
+        return round(len(r["visits"] & avoid) / max(1, len(r["visits"])), 2)
+
+    picked = [min(rows, key=lambda r: (r["base"], avoided(r), r["rest"]))]
     while len(picked) < want:
-        used = set().union(*(r["visits"] for r in picked))
+        used = avoid.union(*(r["visits"] for r in picked))
         sigs = {tuple(p.id for p in r["combo"]) for r in picked}
         left = [r for r in rows if tuple(p.id for p in r["combo"]) not in sigs]
         if not left:
@@ -253,50 +262,70 @@ def assemble(
     use_budget = budget if form.spend_style != "unlimited" else None
     fitted = fit_budget(ranked, s_cost, form, use_budget, places_kind, shared=shared, wanted=wanted)
     for k, (days_fit, est) in enumerate(fitted):
-        day_costs = [p.metrics.get("cost") for p in days_fit]
-        total = None
-        if all(c is not None for c in day_costs) and s_cost is not None:
-            total = int(sum(day_costs) + s_cost + form.prepaid_tickets * form.group_size)  # type: ignore[arg-type]
         options.append(
             {
                 "id": f"PA{k + 1}",
                 "days": days_fit,
-                "total_cost": total,
+                "total_cost": total_cost(days_fit, s_cost, form),
                 "estimate": est if est is not None else trip_estimate(days_fit, s_cost, form),
             }
         )
     for k in range(0 if not fitted else 3, 3):
-        days: list[DayPlan] = []
-        visited: set[str] = set()
-        for _day, plans in sorted(ranked.items()):
-            usable = [p for p in plans if p.status != "fail"] or plans
-            start = min(k, len(usable) - 1)
-            # Lấy lịch hạng k nếu nó không đi lại chỗ đã có ở ngày trước; không thì lịch lặp ít
-            # nhất — trước hết ít chỗ chơi lặp, rồi ít quán lặp, hoà thì theo hạng (từ hạng k).
-            order = usable[start:] + usable[:start]
-            pick = min(
-                order,
-                key=lambda p: (
-                    sum(s in visited and places_kind.get(s) != "meal" for s in p.stops),
-                    sum(s in visited for s in p.stops),
-                    order.index(p),
-                ),
-            )
-            days.append(pick)
-            visited |= set(pick.stops)
-        day_costs = [p.metrics.get("cost") for p in days]
-        total = None
-        if all(c is not None for c in day_costs) and s_cost is not None:
-            total = int(sum(day_costs) + s_cost + form.prepaid_tickets * form.group_size)  # type: ignore[arg-type]
+        days = by_rank(ranked, k, places_kind)
         options.append(
             {
                 "id": f"PA{k + 1}",
                 "days": days,
-                "total_cost": total,
+                "total_cost": total_cost(days, s_cost, form),
                 "estimate": trip_estimate(days, s_cost, form),
             }
         )
+    return finish_trip(options, ranked, s_cost, form, profile)
 
+
+def by_rank(
+    ranked: dict[int, list[DayPlan]],
+    k: int,
+    places_kind: dict[str, str],
+    avoid: set[str] | None = None,
+) -> list[DayPlan]:
+    """Mỗi ngày lịch hạng k nếu nó không đi lại chỗ đã có ở ngày trước (hay ở `avoid`); không thì
+    lịch lặp ít nhất — trước hết ít chỗ chơi lặp, rồi ít quán lặp, hoà thì theo hạng (từ hạng k)."""
+    days: list[DayPlan] = []
+    visited: set[str] = set(avoid or ())
+    for _day, plans in sorted(ranked.items()):
+        usable = [p for p in plans if p.status != "fail"] or plans
+        start = min(k, len(usable) - 1)
+        order = usable[start:] + usable[:start]
+        pick = min(
+            order,
+            key=lambda p: (
+                sum(s in visited and places_kind.get(s) != "meal" for s in p.stops),
+                sum(s in visited for s in p.stops),
+                order.index(p),
+            ),
+        )
+        days.append(pick)
+        visited |= set(pick.stops)
+    return days
+
+
+def total_cost(days: list[DayPlan], s_cost: int | None, form: TripForm) -> int | None:
+    day_costs = [p.metrics.get("cost") for p in days]
+    if any(c is None for c in day_costs) or s_cost is None:
+        return None
+    return int(sum(day_costs) + s_cost + form.prepaid_tickets * form.group_size)  # type: ignore[arg-type]
+
+
+def finish_trip(
+    options: list[dict[str, Any]],
+    ranked: dict[int, list[DayPlan]],
+    s_cost: int | None,
+    form: TripForm,
+    profile: TripProfile,
+) -> dict[str, Any]:
+    """Bỏ phương án trùng, kiểm ngân sách của phương án đầu (vượt thì hỏi user theo mức chi)."""
+    budget = profile.trip_budget
     # Bỏ phương án trùng hệt phương án trước (ngày nào cũng chỉ có 1 lịch đi được).
     unique, seen = [], set()
     for o in options:
@@ -397,16 +426,47 @@ async def xep_hang(state: ItineraryState, ctx: Ctx) -> dict:
     }
 
 
-async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
+def pick_option(
+    state: dict[str, Any], k: int, avoid: set[str]
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], set[str]]:
+    """Phương án k từ lịch của nhánh k (state riêng của nhánh, đã qua bước xếp hạng): vừa ngân
+    sách ±5%, ít trùng chỗ chơi với `avoid` (chỗ của phương án đã chọn + chỗ dành cho nhánh khác).
+    Trả (phương án, lịch của nhánh với mã "V{k}-…", chỗ phương án dùng)."""
     form, profile = form_of(state), profile_of(state)
-    plans = plans_of(state)
-    ranked = {int(d): [plans[i] for i in ids] for d, ids in state["ranked"].items()}
     stay = place_from_dict(state["stay"]) if state.get("stay") else None
     places = places_of(state)
     kinds = {pid: p.kind for pid, p in places.items()}
     musts = {pid for pid, p in places.items() if p.must}
     wanted = {pid: p.wanted for pid, p in places.items() if p.wanted and not p.must}
-    trip = assemble(ranked, stay, form, profile, kinds, musts, wanted)
+    plans = plans_of(state)
+    ranked = {int(d): [plans[i] for i in ids] for d, ids in state["ranked"].items()}
+    s_cost = stay_cost(stay, form)
+    budget = profile.trip_budget if form.spend_style != "unlimited" else None
+    fitted = fit_budget(
+        ranked, s_cost, form, budget, kinds, want=1, shared=musts, wanted=wanted, avoid=avoid
+    )
+    days, est = fitted[0] if fitted else (by_rank(ranked, 0, kinds, avoid=avoid), None)
+    prefix = f"V{k}-"
+    kept = {prefix + pid: {**d, "id": prefix + pid} for pid, d in dump_plans(plans).items()}
+    option = {
+        "id": f"PA{k}",
+        "days": [prefix + p.id for p in days],
+        "total_cost": total_cost(days, s_cost, form),
+        "estimate": est if est is not None else trip_estimate(days, s_cost, form),
+    }
+    return option, kept, {s for p in days for s in p.stops if s not in musts}
+
+
+async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
+    """Bước 15: ghép phương án của các nhánh, kiểm ngân sách của phương án đầu."""
+    form, profile = form_of(state), profile_of(state)
+    stay = place_from_dict(state["stay"]) if state.get("stay") else None
+    plans = plans_of({"plans": state.get("kept_plans") or {}})
+    options = [{**o, "days": [plans[i] for i in o["days"]]} for o in state.get("options") or []]
+    ranked = {
+        int(d): [plans[i] for i in ids] for d, ids in (state.get("first_ranked") or {}).items()
+    }
+    trip = finish_trip(options, ranked, stay_cost(stay, form), form, profile)
     labels = better_at(trip["options"])
     serial = {
         "options": [
@@ -437,4 +497,11 @@ async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
     notes = list(state.get("notes") or [])
     if trip["budget_note"]:
         notes.append(trip["budget_note"])
-    return {"trip": serial, "notes": notes}
+    return {
+        "trip": serial,
+        # Các vòng ghi lại cùng một ghi chú (VD chỗ ở, ngày ghim bị dời): giữ 1 lần.
+        "notes": list(dict.fromkeys(notes)),
+        "plans": dump_plans(plans),
+        "ranked": state.get("first_ranked") or {},
+        "reasons": state.get("first_reasons") or state.get("reasons") or {},
+    }

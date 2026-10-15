@@ -16,6 +16,7 @@ from ailusion.itinerary.agents.decision import DecisionOutput
 from ailusion.itinerary.agents.experience import PurposeChecks
 from ailusion.itinerary.agents.intake import Extraction
 from ailusion.itinerary.agents.planner import PlannerOutput
+from ailusion.itinerary.shared.models import Place
 
 C = (16.06, 108.22)
 CALLS: list[tuple[str, dict[str, Any]]] = []
@@ -302,6 +303,7 @@ def _form(**over: Any) -> dict[str, Any]:
         "budget": 15_000_000,
         "group_type": "couple",
         "departure_time": "18:00",
+        "night_return_time": "22:00",  # có giờ về tối thì bước 4 không hỏi H6
         "purposes": ["relax", "food"],
         "message": "",
     }
@@ -486,3 +488,55 @@ async def test_photo_tool_failure_still_returns_the_plan(
     assert resp.status == "ok" and resp.options
     images = [i.image for o in resp.options for d in o.days for i in d.items if i.place_id]
     assert all(img in (None, "https://img/v1") for img in images)
+
+
+async def test_three_options_run_as_parallel_branches(llm_calls: list[str]) -> None:
+    """3 nhánh song song, mỗi nhánh 1 phương án: Planner chạy mỗi nhánh, lịch mang mã nhánh, tìm
+    rộng hơn (theo sao + quét quanh trung tâm), 3 phương án không trùng hệt nhau."""
+    graph = build_itinerary_graph([FakeTool(name=n, description="fake") for n in TOOLS]).compile()
+    form = _form()
+    sent = [k for k, v in form.items() if v not in (None, [], "")]
+    state = await graph.ainvoke({"form": form, "sent": sent}, {"configurable": {"thread_id": "r"}})
+    ids = [o["id"] for o in state["trip"]["options"]]
+    assert ids[0] == "PA1" and len(ids) == len(set(ids))
+    for o in state["trip"]["options"]:
+        k = o["id"][2:]
+        assert all(pid.startswith(f"V{k}-") for pid in o["days"])
+        assert all(pid in state["plans"] for pid in o["days"])
+    assert llm_calls.count("PlannerOutput") >= 3
+    sigs = [
+        tuple(tuple(state["plans"][p]["stops"]) for p in o["days"])
+        for o in state["trip"]["options"]
+    ]
+    assert len(sigs) == len(set(sigs))
+    finds = [a for n, a in CALLS if n == "find_places"]
+    assert any(a.get("sort_by") == "rating" for a in finds)
+    assert any(a.get("radius_km") == 5 and "lat" in a for a in finds)
+
+
+def test_places_are_shared_out_in_turn() -> None:
+    from ailusion.itinerary.coordinator.branches import split_shares
+
+    def place(i: int, kind: str, **kw: Any) -> Place:
+        return Place(
+            place_id=f"{kind}{i}",
+            name=f"{kind} {i}",
+            category="",
+            kind=kind,
+            lat=16.0,
+            lng=108.2,
+            rating=5 - i * 0.1,
+            reviews=1000,
+            **kw,
+        )
+
+    places = {
+        p.place_id: p
+        for p in [place(i, "visit") for i in range(6)]
+        + [place(i, "meal") for i in range(3)]
+        + [place(9, "visit", must=True), place(8, "meal", wanted="bún bò")]
+    }
+    shares = split_shares(places)
+    assert shares[0] == {"visit0", "visit3"}
+    assert shares[1] == {"visit1", "visit4"}  # quán không chia
+    assert not any("visit9" in s or "meal8" in s for s in shares)  # user chọn / nhắc: không chia

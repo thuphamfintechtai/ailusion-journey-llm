@@ -56,6 +56,7 @@ class Place:
     stay_low: int | None = None  # phút ở lại, mức ít
     stay_high: int | None = None
     stay_by: str | None = None  # "google" | "ước theo loại"
+    rest_of: str | None = None  # kind "rest": "cafe" | "hotel" — chỗ nghỉ trưa dọc đường
     matches_purpose: bool | None = None
     match_by: str | None = None
     to_verify: list[str] = field(default_factory=list)
@@ -185,6 +186,9 @@ class Run:
     back: int
     issues: list[str]
     unchecked: list[str]
+    # Nghỉ trưa: (sau chỗ thứ k trong `stops`, giờ tới chỗ nghỉ, giờ rời, chỗ nghỉ: STAY hoặc
+    # place_id quán cà phê / khách sạn) — phút trong ngày.
+    rest: tuple[int, int, int, str] | None = None
 
 
 @dataclass
@@ -194,6 +198,8 @@ class DayPlan:
     leave_stay: str
     stops: list[str]
     status: str = "ok"  # ok | risky | warn | fail
+    rest_after: int | None = None  # nghỉ trưa sau chỗ thứ k (bước chạy thử)
+    rest_at: str | None = None  # nơi nghỉ trưa: STAY hoặc place_id (kind "rest")
     issues: list[str] = field(default_factory=list)
     unchecked: list[str] = field(default_factory=list)
     metrics: dict[str, float | None] = field(default_factory=dict)
@@ -208,6 +214,8 @@ class DayWindow(BaseModel):
     day_end: str
     blocked_slots: list[str] = Field(default_factory=list)
     meal_only_slots: list[str] = Field(default_factory=list)
+    nap: bool = False  # có nghỉ trưa NAP_MIN phút sau bữa trưa
+    nap_at: str = "auto"  # TripForm.nap: auto | stay | cafe | hotel
     free_minutes: int
     guess: list[str] = Field(default_factory=list)
 
@@ -256,6 +264,13 @@ class ItineraryState(TypedDict, total=False):
     matrix: dict[str, float]  # "from|to" -> phút
     km_matrix: dict[str, float]  # "from|to" -> km đường đi (cùng lượt distance_matrix)
     plans: dict[str, dict[str, Any]]  # plan_id -> DayPlan dạng dict
+    # 3 phương án chạy song song (coordinator/branches.py): mỗi nhánh có state riêng.
+    round: int  # nhánh (phương án) 1..BRANCHES — chỉ có trong state riêng của nhánh
+    used: list[str]  # chỗ dành cho phương án khác — nhánh này xếp chúng cuối danh sách
+    options: list[dict[str, Any]]  # phương án các nhánh: {"id", "days": [plan_id], ...}
+    kept_plans: dict[str, dict[str, Any]]  # lịch mọi nhánh, mã "V{nhánh}-N1-L2"
+    first_ranked: dict[str, list[str]]  # hạng lịch nhánh 1 (cho lựa chọn rẻ hơn khi vượt tiền)
+    first_reasons: dict[str, list[str]]
     ranked: dict[str, list[str]]  # ngày -> plan_id theo hạng
     reasons: dict[str, list[str]]
     trip: dict[str, Any]

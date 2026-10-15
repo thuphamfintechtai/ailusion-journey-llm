@@ -131,8 +131,50 @@ def fill_stay_estimate(place: Place) -> None:
 
 MAX_DETAILS = 10  # get_place_details (tốn quota SerpApi) để lấy thời gian ở lại
 MAX_STAYS_COMPARED = 6
-# = giới hạn của tool distance_matrix (MCP `_TOI_DA_DIEM`); vượt là lỗi cả ma trận.
-MAX_MATRIX_POINTS = 25
+# Tool distance_matrix nhận tối đa 25 điểm (đi + đến) mỗi lượt (MCP `_TOI_DA_DIEM`). Nhiều điểm
+# hơn thì chia thành ô TILE điểm đi × TILE điểm đến, gọi song song rồi ghép (`matrix_pairs`).
+TOOL_MATRIX_POINTS = 25
+TILE = 12
+# Số điểm tối đa (chỗ ở + chỗ chơi + quán) đem vào danh sách của một phương án: 45 điểm = 16 ô.
+MAX_MATRIX_POINTS = 45
+
+
+async def matrix_pairs(
+    ctx: Ctx, points: list[Place], vehicle: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Mọi cặp (from, to) giữa `points` (index trong `points`) -> (cặp, nhật ký tool). Một ô lỗi
+    thì các cặp của ô đó thiếu, chỗ gọi ước theo đường chim bay."""
+    coords = [f"{p.lat},{p.lng}" for p in points]
+    if len(points) <= TOOL_MATRIX_POINTS:
+        data, log = await ctx.tool("distance_matrix", origins=coords, vehicle=vehicle)
+        return (data.get("pairs") or []) if tool_ok(data) else [], [log]
+    chunks = [list(range(i, min(i + TILE, len(points)))) for i in range(0, len(points), TILE)]
+    tiles = [(a, b) for a in chunks for b in chunks]
+    calls = [
+        (
+            "distance_matrix",
+            {"origins": [coords[i] for i in a], "vehicle": vehicle}
+            if a is b
+            else {
+                "origins": [coords[i] for i in a],
+                "destinations": [coords[j] for j in b],
+                "vehicle": vehicle,
+            },
+        )
+        for a, b in tiles
+    ]
+    results, logs = await ctx.many(calls)
+    pairs = []
+    for (a, b), data in zip(tiles, results, strict=True):
+        if not tool_ok(data):
+            continue
+        # Tool đánh số điểm đến tiếp sau điểm đi (ô vuông thì dùng chung số).
+        offset = 0 if a is b else len(a)
+        for x in data.get("pairs") or []:
+            pairs.append({**x, "from": a[x["from"]], "to": b[x["to"] - offset]})
+    return pairs, logs
+
+
 # Ước phút đi khi distance_matrix không trả được cặp nào đó: km đường chim bay × hệ số đường vòng
 # ÷ tốc độ trong phố, cộng phút gửi xe. Số tạm (nguồn "tu_dat"), kết quả ghi rõ là ước.
 DETOUR = 1.4
@@ -234,6 +276,7 @@ def varied_meals(meals: list[Place]) -> list[Place]:
 
 
 MEALS_PER_CUISINE = 2
+MEAL_CHOICES = 2  # số quán cho mỗi bữa bắt buộc đưa Planner (chỉ 1 thì quán lặp giữa các ngày)
 MEALS_PER_DAY = 3  # sáng, trưa, tối: đủ ngần này quán mỗi ngày thì mỗi ngày có danh sách quán riêng
 WANTED_MEALS = 3  # mỗi món user nhắc: giữ tối đa ngần này quán trong danh sách đưa Planner
 WANTED_VISITS = 4  # chỗ chơi khớp thứ user nhắc giữ chắc trong danh sách
@@ -378,6 +421,9 @@ STAY_BUDGET_SHARE = 0.5
 # Tiền phòng cả chuyến nên khoảng ngần này phần ngân sách (phần còn lại cho ăn, chơi, đi lại).
 # Số tạm ("tu_dat"); nên thay bằng tỉ lệ thật từ các chuyến user đã chọn.
 STAY_TARGET_SHARE = 0.35
+STAY_PRICE_PICKS = 8  # chỗ ở giá sát mục tiêu nhất đem so phút đi tới các điểm chơi
+STAY_PRICE_SLACK = 0.25  # lệch giá thêm tối đa ngần này (phần của mục tiêu) để được chỗ gần hơn
+STAY_RIDE_VISITS = 12  # số điểm chơi nổi bật đem đo phút đi từ chỗ ở
 
 
 def usable_stays(
@@ -505,13 +551,42 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
         # Có ngân sách: lấy chỗ ở có tiền phòng cả chuyến gần `STAY_TARGET_SHARE` ngân sách nhất
         # (trong số đã qua `usable_stays`), để cả chuyến bám ngân sách chứ không rẻ quá / đắt quá.
         budget = profile.trip_budget
-        priced = [x for x in candidates if x.price]
+        # Mọi chỗ ở dùng được có giá (không chỉ vài chỗ sao cao nhất đem so đường đi): 6 chỗ đó hay
+        # toàn chỗ rẻ, ngân sách 8 triệu lại chọn phòng 390 nghìn/đêm.
+        priced = [x for x in usable if x.price]
         if budget and form.spend_style != "unlimited" and priced:
             target = budget * STAY_TARGET_SHARE
             nights = max(1, form.num_nights)
-            chosen_stay = min(
-                priced, key=lambda x: (abs(x.price * nights * rooms - target), key(x))
-            )
+
+            def gap(x: Place) -> float:
+                return abs(x.price * nights * rooms - target) / target  # type: ignore[operator]
+
+            # Vài chỗ giá sát mục tiêu nhất (±STAY_PRICE_SLACK), rồi lấy chỗ ít phút đi tới các
+            # điểm chơi nhất: không thì chọn resort ở Hội An cho chuyến Đà Nẵng, ngày nào cũng
+            # 35 phút mỗi lượt về.
+            close = sorted(priced, key=gap)[:STAY_PRICE_PICKS]
+            close = [x for x in close if gap(x) <= gap(close[0]) + STAY_PRICE_SLACK]
+            if len(close) > 1 and visits:
+                data, m_log = await ctx.tool(
+                    "distance_matrix",
+                    origins=[f"{x.lat},{x.lng}" for x in close],
+                    destinations=[f"{p.lat},{p.lng}" for p in visits[:STAY_RIDE_VISITS]],
+                    vehicle=form.vehicle,
+                )
+                logs.append(m_log)
+                per_stay: dict[int, list[float]] = {}
+                for pair in (data.get("pairs") or []) if tool_ok(data) else []:
+                    if pair.get("duration_min") is not None and pair["from"] < len(close):
+                        per_stay.setdefault(pair["from"], []).append(pair["duration_min"])
+                ride_of = {i: median(v) for i, v in per_stay.items()}
+                chosen_stay = close[
+                    min(
+                        range(len(close)),
+                        key=lambda i: (ride_of.get(i) or 10**6, gap(close[i])),
+                    )
+                ]
+            else:
+                chosen_stay = min(priced, key=lambda x: (gap(x), key(x)))
     await ctx.log(
         "cham",
         "finding",
@@ -541,10 +616,17 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     for p in ordered_visits:
         per[p.group] = per.get(p.group, 0) + 1
         (first if per[p.group] <= type_cap(p.group, len(profile.days)) else rest).append(p)
+    # Chỗ dành cho phương án khác (`used`, xem coordinator/branches.py) xếp sau mọi chỗ của
+    # phương án này (cùng nhóm), để 3 phương án đi chỗ khác nhau; thiếu thì vẫn dùng được ở cuối.
+    used = set(state.get("used") or [])
+
+    def unused_first(xs: list[Place]) -> list[Place]:
+        return [p for p in xs if p.place_id not in used] + [p for p in xs if p.place_id in used]
+
     ordered_visits = (
         [p for p in first + rest if p.must]
-        + [p for p in first + rest if not p.must and p.wanted]
-        + [p for p in first + rest if not p.must and not p.wanted]
+        + unused_first([p for p in first + rest if not p.must and p.wanted])
+        + unused_first([p for p in first + rest if not p.must and not p.wanted])
     )
     # Mỗi chuỗi quán 1 chi nhánh; đa dạng loại món trước khi cắt bớt. Quán user chọn luôn giữ,
     # chi nhánh khác cùng chuỗi thì bỏ.
@@ -555,25 +637,28 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     wanted_meals: list[Place] = []
     for word in dict.fromkeys(m.wanted for m in others if m.wanted):
         same = [m for m in one_per_brand([m for m in others if m.wanted == word], center)]
-        wanted_meals += sorted(same, key=lambda m: -(m.rating_floor or 0))[:WANTED_MEALS]
+        same = sorted(same, key=lambda m: (m.place_id in used, -(m.rating_floor or 0)))
+        wanted_meals += same[:WANTED_MEALS]
     rest_meals = [m for m in others if m not in wanted_meals]
-    ordered_meals = must_meals + wanted_meals + varied_meals(one_per_brand(rest_meals, center))
+    ordered_meals = (
+        must_meals + wanted_meals + unused_first(varied_meals(one_per_brand(rest_meals, center)))
+    )
     # Ít nhất 2 quán riêng mỗi ngày (bước chia ngày cần vậy mới không phải dùng chung quán).
     # Đủ quán cho mọi bữa bắt buộc (sáng / trưa / tối theo giờ rảnh từng ngày).
     n_meal_slots = max(
         sum(len(required_meals(d.day_start, d.day_end)) for d in profile.days),
         2 * len(profile.days),
     )
-    shortlist = ordered_visits[: MAX_MATRIX_POINTS - 1 - min(len(ordered_meals), n_meal_slots + 3)]
-    shortlist += ordered_meals[: min(len(ordered_meals), n_meal_slots + 3)]
+    # Mỗi bữa ~MEAL_CHOICES quán để chọn: 3 lịch mỗi ngày khác quán, các ngày không ăn lại 1 quán.
+    n_meals = min(len(ordered_meals), n_meal_slots * MEAL_CHOICES + 3)
+    shortlist = ordered_visits[: MAX_MATRIX_POINTS - 1 - n_meals]
+    shortlist += ordered_meals[:n_meals]
     points = ([stay] if stay else []) + shortlist
-    data, m_log = await ctx.tool(
-        "distance_matrix", origins=[f"{p.lat},{p.lng}" for p in points], vehicle=form.vehicle
-    )
+    pairs, m_logs = await matrix_pairs(ctx, points, form.vehicle)
     ids = ([STAY] if stay else []) + [p.place_id for p in shortlist]
     matrix: dict[str, float] = {}
     km_matrix: dict[str, float] = {}  # km đường đi thật cùng lượt gọi, cho tab Chi phí
-    for pair in (data.get("pairs") or []) if tool_ok(data) else []:
+    for pair in pairs:
         key = f"{ids[pair['from']]}|{ids[pair['to']]}"
         if pair.get("distance_km") is not None:
             km_matrix[key] = float(pair["distance_km"])
@@ -611,7 +696,7 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         [p for p in shortlist if p.kind == "meal" and p not in kept],
         # Mỗi ngày thêm 2 chỗ dư để Planner có lựa chọn khi xếp 3 lịch khác nhau.
         sum(caps) + 2 * len(profile.days),
-        n_meal_slots,
+        n_meal_slots * MEAL_CHOICES,
         center,
         per_group=len(profile.days),
     )
@@ -649,5 +734,5 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         "matrix": matrix,
         "km_matrix": km_matrix,
         "notes": notes,
-        "tool_log": [m_log],
+        "tool_log": m_logs,
     }

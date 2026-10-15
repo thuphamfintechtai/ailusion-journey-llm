@@ -1,7 +1,7 @@
 """Agent Planner — bước 9: xếp các lịch đi khác nhau cho từng ngày.
 
 Vào: khung giờ từng ngày, danh sách chỗ (mã D/Q, giờ mở cửa, thời gian ở lại, giá), phút đi giữa
-các chỗ. Ra: `PlannerOutput` (≥ 3 lịch mỗi ngày, mỗi lượt tối đa `DAYS_PER_PLANNER_CALL` ngày).
+các chỗ. Ra: `PlannerOutput` (≥ 2 lịch mỗi ngày, mỗi lượt tối đa `DAYS_PER_PLANNER_CALL` ngày).
 Planner KHÔNG chấm lịch nào hay hơn — code chạy thử và xếp hạng. Code kiểm (`plan_errors`): chỉ
 dùng mã có trong danh sách, đủ số lịch; sai thì trả sửa 1 lần. Không trả được lịch nào thì
 `fallback_plans` tự ghép mỗi ngày 1 lịch, gắn nhãn dự phòng.
@@ -18,6 +18,7 @@ from ..shared.context import Ctx
 from ..shared.form import (
     GROUP_NAMES,
     MUST_LATE_MAX,
+    NAP_MIN,
     PURPOSE_NAMES,
     hhmm,
     must_time_text,
@@ -46,7 +47,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 2. Giờ rời chỗ ở (`leave_stay`) không sớm hơn giờ bắt đầu ngày.
 3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày; không chạm khung bị chặn. Khung "chỉ ăn uống" chỉ được xếp quán Q….
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
-5. Mỗi ngày ít nhất 3 lịch, không có 2 lịch giống hệt nhau.
+5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau.
 6. Ngày nào cũng phải đủ bữa trong giờ rảnh: bữa sáng (06:30–10:00, ngày bắt đầu sớm thì quán Q… gần chỗ ở là chỗ ĐẦU TIÊN), bữa trưa (11:00–13:30), bữa tối (18:00–20:00). Mỗi bữa 1 quán Q… chèn đúng chỗ trong `stops`; thiếu bữa là lỗi. Dòng "Ngày …" ghi các bữa bắt buộc của ngày.
 7. Mỗi lịch tối đa 1 chỗ đi chơi của mỗi loại (cột "loại"): không xếp 2 spa, 2 chùa… trong cùng một ngày. Một mã không lặp lại trong cùng một lịch.
 8. Mỗi ngày CHỈ dùng mã trong danh sách của chính ngày đó. Hệ thống đã chia chỗ cho từng ngày (theo giờ mở cửa, gần nhau, khác loại) để các ngày không đi lại chỗ cũ.
@@ -56,6 +57,8 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 11. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày nên có mức tiền khác nhau quanh con số đó (một lịch thấp hơn, một lịch sát, một lịch cao hơn một chút), để hệ thống ghép được cả chuyến sát ngân sách user đưa. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
 
 12. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong cả chuyến, nên đưa vào nhiều lịch (quán thì vào đúng bữa trưa / tối).
+
+13. Ngày ghi "nghỉ trưa": sau bữa trưa hệ thống tự chèn 90 phút nghỉ (chỗ ở / quán cà phê / khách sạn gần đó) (không cần ghi vào `stops`). Buổi chiều sau đó tới bữa tối PHẢI có chỗ chơi: không để trống — tới quán tối sớm quá 45 phút là lỗi. "rảnh … phút" đã trừ giờ nghỉ trưa.
 
 # Làm các lịch khác nhau thật sự
 
@@ -72,12 +75,19 @@ PLANNER_FIX = """
 
 # Sửa lịch
 
-Hệ thống chạy thử các lịch dưới đây và thấy lỗi. Chỉ trả lại đúng các ngày có lỗi, mỗi ngày đủ ít nhất 3 lịch (giữ lịch không lỗi, sửa hoặc thay lịch lỗi), giữ nguyên mã lịch của lịch được sửa.
+Hệ thống chạy thử các lịch dưới đây và thấy lỗi. Chỉ trả lại đúng các ngày có lỗi, mỗi ngày đủ ít nhất 2 lịch (giữ lịch không lỗi, sửa hoặc thay lịch lỗi), giữ nguyên mã lịch của lịch được sửa.
 """
 
 
 DAYS_PER_PLANNER_CALL = 4
-MIN_PLANS_PER_DAY = 3
+# 2 lịch mỗi ngày đủ: 3 phương án đã khác nhau nhờ 3 nhánh song song (coordinator/branches.py).
+MIN_PLANS_PER_DAY = 2
+# Lượt Planner sửa lịch (sai luật / chạy thử lệch) tốn ~2/3 token của cả lộ trình mà code đã tự
+# sửa phần lớn (bỏ mã lặp, sắp thứ tự, đặt quán ăn, bỏ bớt chỗ khi quá dài, chèn nghỉ trưa): tắt.
+PLANNER_FIXES = False
+DISTINCT_POOL = 3  # ngày có từ ngần này chỗ chơi mới bắt 2 lịch phải khác bộ chỗ chơi
+# Bảng phút đi đưa Planner: mỗi chỗ chỉ ghi ngần này chỗ gần nhất (đủ để gom chỗ gần nhau).
+PAIRS_PER_PLACE = 4
 
 
 class PlanDraft(BaseModel):
@@ -103,7 +113,7 @@ def plan_errors(
     allowed: dict[int, list[str]] | None = None,
     required: dict[int, list[str]] | None = None,
 ) -> dict[int, list[str]]:
-    """Lỗi theo ngày: mã ngoài danh sách, rời chỗ ở sớm hơn giờ bắt đầu, < 3 lịch, lịch trùng,
+    """Lỗi theo ngày: mã ngoài danh sách, rời chỗ ở sớm hơn giờ bắt đầu, < 2 lịch, lịch trùng,
     mã lặp trong một lịch, 2 chỗ chơi cùng loại trong một lịch, mã không thuộc ngày đó.
 
     `days`: ngày -> giờ bắt đầu ngày ("HH:MM"). `groups`: mã chỗ chơi D… -> loại (Place.group).
@@ -152,7 +162,7 @@ def plan_errors(
             pool = [
                 c for c in (allowed or {}).get(day, codes) if c.startswith("D") and c not in must
             ]
-            if own and len(pool) >= MIN_PLANS_PER_DAY and own in visit_sets and sig not in dup_sigs:
+            if own and len(pool) >= DISTINCT_POOL and own in visit_sets and sig not in dup_sigs:
                 errs.append(
                     f"{p.id}: cùng bộ chỗ chơi với một lịch khác (chỉ đổi thứ tự / quán), "
                     "đổi ít nhất 1 chỗ chơi"
@@ -235,8 +245,15 @@ def day_pairs(
                 if v is not None
             ]
             if ways:
-                out.append((sum(ways) / len(ways), f"{a}–{b} {round(sum(ways) / len(ways))}"))
-    return [text for _, text in sorted(out)[:MAX_PAIRS_PER_DAY]]
+                out.append((sum(ways) / len(ways), a, b))
+    # Mỗi chỗ chỉ giữ PAIRS_PER_PLACE cặp gần nhất (cặp được giữ nếu gần với 1 trong 2 đầu).
+    near: dict[str, int] = {}
+    kept = []
+    for minutes, a, b in sorted(out):
+        if near.get(a, 0) < PAIRS_PER_PLACE or near.get(b, 0) < PAIRS_PER_PLACE:
+            near[a], near[b] = near.get(a, 0) + 1, near.get(b, 0) + 1
+            kept.append(f"{a}–{b} {round(minutes)}")
+    return kept[:MAX_PAIRS_PER_DAY]
 
 
 def planner_input(
@@ -258,6 +275,13 @@ def planner_input(
             extra.append("chỉ ăn uống " + ", ".join(d.meal_only_slots))
         weather = weather_text(state, d.day)
         meals = required_meals(d.day_start, d.day_end)
+        if d.nap:
+            where = {
+                "cafe": "ở quán cà phê gần quán trưa",
+                "hotel": "ở khách sạn gần quán trưa",
+                "stay": "tại chỗ ở",
+            }.get(d.nap_at, "tại chỗ ở hoặc quán cà phê gần quán trưa")
+            extra.append(f"nghỉ trưa {NAP_MIN} phút {where} sau bữa trưa (hệ thống tự chèn)")
         lines.append(
             f"# Ngày {d.day} ({form.day_date(d.day):%d/%m}): {d.day_start}–{d.day_end}, "
             f"rảnh {d.free_minutes} phút, bữa bắt buộc: {', '.join(meals) or 'không'}"
@@ -390,7 +414,7 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
         if out is None:
             continue
         errors = plan_errors(out, codes, {d: starts[d] for d in batch}, groups, allowed, required)
-        if errors:
+        if errors and PLANNER_FIXES:
             await ctx.log("xep_lich", "finding", "Lịch sai luật, trả Planner sửa 1 lần")
             fixed, calls, usage = await call_planner(ctx, state, sorted(errors), errors, "xep_lich")
             calls_total += calls
@@ -406,7 +430,10 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
             if d.day not in starts:
                 continue
             for p in d.plans:
-                stops = [state["codes"][c] for c in p.stops if c in state["codes"]]
+                # Planner đôi khi ghi 1 mã 2 lần (VD "Mỹ Sơn → Mỹ Sơn"): giữ lần đầu.
+                stops = list(
+                    dict.fromkeys(state["codes"][c] for c in p.stops if c in state["codes"])
+                )
                 if not stops:
                     continue
                 plan = DayPlan(

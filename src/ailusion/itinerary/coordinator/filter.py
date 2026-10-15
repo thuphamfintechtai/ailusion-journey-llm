@@ -44,7 +44,7 @@ def has_word(text: str, word: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text) is not None
 
 
-MAX_HOURS_PLACES = 30  # tra giờ mở cửa cho tối đa ngần này chỗ (chia lượt 15 chỗ)
+MAX_HOURS_PLACES = 90  # tra giờ mở cửa cho tối đa ngần này chỗ (chia lượt 15 chỗ; 3 phương án)
 # Xa trung tâm điểm đến hơn ngần này thì bỏ: DB có chỗ gắn nhầm điểm đến (VD "VinWonders Nha
 # Trang" trong danh sách Đà Nẵng). 60 km đủ gồm Hội An, Bà Nà khi đi Đà Nẵng. Số tạm ("tu_dat").
 MAX_KM_FROM_CENTER = 60

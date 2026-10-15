@@ -25,6 +25,9 @@ SpendStyle = Literal["normal", "unlimited", "luxury_within_budget"]
 
 
 BudgetUnit = Literal["group_trip", "person_trip", "person_day"]
+# Nghỉ trưa ở đâu: auto (chỗ ở gần thì về, xa thì quán cà phê gần quán trưa) · stay (về chỗ ở) ·
+# cafe (quán cà phê gần quán trưa) · hotel (khách sạn gần quán trưa, nghỉ theo giờ) · none.
+Nap = Literal["auto", "stay", "cafe", "hotel", "none"]
 
 
 TravelMode = Literal["motorbike", "car", "bus", "taxi"]
@@ -110,19 +113,30 @@ SORT_ORDER: dict[str, list[tuple[str, str]]] = {
 
 
 # Số tạm (nguồn "tu_dat"), ghi rõ trong kết quả khi phải dùng.
-DEFAULT_ARRIVAL = "11:00"
+DEFAULT_ARRIVAL = "08:00"  # không nhập giờ: ngày đầu bắt đầu buổi sáng như các ngày khác
 DEFAULT_DEPARTURE = "15:00"
 DEFAULT_WAKE = "08:00"
-# User không điền "Tối cần về chỗ ở trước" thì KHÔNG đặt luật về sớm: ngày kéo tới giờ phần lớn
-# chỗ đã đóng cửa (quy ước). Chỉ giờ user tự điền mới giới hạn buổi tối.
-DEFAULT_NIGHT_RETURN = "23:30"
+# Nghỉ trưa: ngày dài (bắt đầu từ NAP_IF_START_BY, kéo tới ít nhất NAP_IF_END_FROM) thì sau bữa
+# trưa về chỗ ở nghỉ NAP_MIN phút (bước chạy thử tự chèn, Planner chỉ cần chừa thời gian).
+NAP_MIN = 90
+NAP_IF_START_BY = "09:00"
+NAP_IF_END_FROM = "17:00"
+NAP_HOME_MAX = 20  # auto: từ quán trưa về chỗ ở quá ngần này phút thì nghỉ ở quán cà phê gần đó
+NAP_SPOT_KM = 4  # quán cà phê / khách sạn nghỉ trưa cách quán trưa tối đa ngần này km
+CAFE_REST_PRICE = 50_000  # mỗi người một ly khi ngồi nghỉ ở quán cà phê (số tạm, "tu_dat")
+HOTEL_REST_SHARE = 0.5  # nghỉ theo giờ ở khách sạn ~ nửa giá phòng 1 đêm (số tạm, "tu_dat")
+# User không điền "Tối cần về chỗ ở trước": bước 4 hỏi lại (H6) user thường đi chơi TỚI mấy giờ
+# rồi mới về; giờ về chỗ ở = giờ đó + EVENING_RIDE_BACK (đường về). Chọn "chưa biết" (hay không trả
+# lời) thì đi chơi tới 20:00. "Có đi chơi đêm" thì về tới 23:30.
+EVENING_RIDE_BACK = 45
+DEFAULT_EVENING_UNTIL = "20:00"
+DEFAULT_NIGHT_RETURN = "20:45"  # DEFAULT_EVENING_UNTIL + EVENING_RIDE_BACK
 CHECKIN_MIN = 90  # thủ tục ở bến
 DEPARTURE_BUFFER_MIN = 30
 HUB_EXIT_MIN = 15  # ra khỏi bến
 HUB_TRAVEL_MIN = 30  # bến <-> chỗ ở khi chưa biết vị trí bến
 BUSY_TRAVEL_MIN = 15  # tới chỗ bận khi chưa biết vị trí
 LOW_FREE_MINUTES = 300  # B1: ngày rảnh ít
-LOW_BUDGET_RATIO = 1.5  # B3
 # Khung giờ ăn (quy ước sản phẩm, khớp luật 6 của Agent Planner). Bữa sáng ăn ở chỗ ở, không xếp.
 # Bữa sáng tới 10:00: ngày bắt đầu từ 09:30 trở về trước bắt buộc có bữa sáng (phủ ≥ 30 phút),
 # bắt đầu 10:00 hay chiều thì không.
@@ -233,6 +247,7 @@ class TripForm(BaseModel):
     night_return_time: str | None = None
     busy_slots: list[BusySlot] = Field(default_factory=list)
     night_out: bool = False
+    nap: Nap = "auto"
     # Mục đích, ưu tiên
     purposes: list[Purpose] = Field(default_factory=list)
     interests: str = ""
@@ -305,8 +320,16 @@ def daily_budget(form: TripForm) -> int | None:
 
 
 def trip_budget(form: TripForm) -> int | None:
-    per_day = daily_budget(form)
-    return per_day * form.group_size * form.num_days if per_day is not None else None
+    """Ngân sách cả đoàn cả chuyến (trừ vé đã mua). Tính thẳng, không qua số mỗi người mỗi ngày
+    (chia rồi nhân lại thì 8 triệu thành 7.999.998 đ)."""
+    if not form.budget:
+        return None
+    n, d = form.group_size, form.num_days
+    if form.budget_unit == "group_trip":
+        return int(form.budget - form.prepaid_tickets * n)
+    if form.budget_unit == "person_trip":
+        return int((form.budget - form.prepaid_tickets) * n)
+    return int(form.budget * n * d)
 
 
 def money(v: Any) -> str:

@@ -106,3 +106,35 @@ def test_purpose_keyword_needs_a_whole_word():
     assert keyword_match(place("Làng cổ Phước Tích", "Điểm du lịch"), ["culture"]) == "làng cổ"
     assert keyword_match(place("Barber King", "Tiệm cắt tóc"), ["fun"]) is None
     assert keyword_match(place("Sky Bar 36", "Bar"), ["fun"]) == "bar"
+
+
+def test_kind_follows_the_category_before_the_name():
+    from ailusion.itinerary.shared.tools import kind_of
+
+    assert kind_of("Chùa phật giáo", "Chùa Quán Thế Âm") == "visit"
+    assert kind_of("Nhà hàng", "Khói Garden") == "meal"
+    assert kind_of("", "Quán bún bò Bà Diệu") == "meal"
+
+
+def test_trip_budget_is_not_rounded_through_per_day():
+    from ailusion.itinerary.shared.form import trip_budget
+
+    form = TripForm(
+        destination="Đà Nẵng",
+        start_date="2026-10-22",
+        end_date="2026-10-24",
+        group_size=2,
+        budget=8_000_000,
+    )
+    assert trip_budget(form) == 8_000_000
+    assert (
+        trip_budget(form.model_copy(update={"budget_unit": "person_day", "budget": 1_000_000}))
+        == 6_000_000
+    )
+
+
+def test_numeric_category_codes_fall_back_to_the_name():
+    from ailusion.itinerary.shared.tools import kind_of
+
+    assert kind_of("4004, 4004-2", "Bún Bò Huế Gốc Bún") == "meal"  # mã loại của Vietmap
+    assert kind_of("4004, 4004-2", "Bãi Đá Ông Địa") == "visit"
