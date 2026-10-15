@@ -17,7 +17,16 @@ from ..agents.experience import MAX_PURPOSE_CHECKS, check_purposes
 from ..shared.context import Ctx
 from ..shared.form import PURPOSE_KEYWORDS
 from ..shared.math import km
-from ..shared.models import ItineraryState, Place, dump_places, form_of, places_of, profile_of
+from ..shared.models import (
+    ItineraryState,
+    Place,
+    dump_places,
+    form_of,
+    places_of,
+    profile_of,
+    wanted_match,
+    wanted_words,
+)
 from ..shared.tools import add_hours, add_needs
 
 
@@ -25,9 +34,14 @@ def keyword_match(place: Place, purposes: list[str]) -> str | None:
     """Từ khoá của mục đích có trong loại / tên chỗ -> trả từ khoá đó (làm bằng chứng)."""
     for purpose in purposes:
         for word in PURPOSE_KEYWORDS.get(purpose, ()):
-            if word in place.text:
+            if has_word(place.text, word):
                 return word
     return None
+
+
+def has_word(text: str, word: str) -> bool:
+    """Khớp nguyên chữ: "spa" không khớp "space", "bar" không khớp "barber"."""
+    return re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text) is not None
 
 
 MAX_HOURS_PLACES = 30  # tra giờ mở cửa cho tối đa ngần này chỗ (chia lượt 15 chỗ)
@@ -206,6 +220,10 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
     if removed:
         notes.append(f"Bỏ {len(removed)} chỗ: " + "; ".join(removed[:6]))
 
+    # Chỗ khớp thứ user nhắc (sở thích + lời nhắn, VD "bún bò"): gắn từ khoá, bước sau ưu tiên.
+    words = wanted_words(form.interests)
+    for p in places.values():
+        p.wanted = wanted_match(p, words)
     # Gửi agent: chỗ không chứa từ khoá mục đích (6a), chỗ chơi chưa có giá (6b).
     for p in places.values():
         word = keyword_match(p, profile.purposes)

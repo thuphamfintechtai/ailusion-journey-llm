@@ -43,7 +43,7 @@ def compare_dims(group: str) -> list[tuple[str, str]]:
     for name in ("num_matches", "quality"):
         dims.setdefault(name, "max")
     if "num_stops" in dims:
-        dims["num_stops"] = "max" if group == "P1" else "min"
+        dims["num_stops"] = "max" if group in ("P1", "P5") else "min"
     return list(dims.items())
 
 
@@ -140,6 +140,7 @@ def fit_budget(
     places_kind: dict[str, str],
     want: int = 3,
     shared: set[str] | None = None,
+    wanted: dict[str, str] | None = None,
 ) -> list[tuple[list[DayPlan], int | None]]:
     """Tối đa `want` phương án (mỗi ngày 1 lịch), KHÁC NHAU thật sự.
 
@@ -147,8 +148,12 @@ def fit_budget(
     đều → tổng hạng các lịch nhỏ nhất (điều nhóm khách coi trọng). PA2, PA3: cùng thứ tự, nhưng
     sau luật ngân sách thì ưu tiên tổ hợp có ít chỗ chơi trùng với các phương án đã chọn nhất,
     để 3 phương án cho 3 lựa chọn khác nhau chứ không chỉ lệch 1 lịch. `shared`: chỗ phương án nào
-    cũng phải có (user chọn), không tính là trùng. `budget` None: bỏ qua luật tiền."""
+    cũng phải có (user chọn), không tính là trùng. `budget` None: bỏ qua luật tiền.
+    `wanted`: place_id -> thứ user nhắc (VD "bún bò"); phương án thiếu thứ nào xếp sau (ngay sau
+    luật không lặp chỗ, trước luật tiền)."""
     shared = shared or set()
+    wanted = wanted or {}
+    asked = set(wanted.values())
     days = sorted(ranked)
     cand: dict[int, list[DayPlan]] = {}
     for d in days:
@@ -175,6 +180,7 @@ def fit_budget(
             repeats += sum(s in seen and places_kind.get(s) != "meal" for s in p.stops)
             seen |= set(p.stops)
         visits = {s for s in seen if places_kind.get(s) != "meal" and s not in shared}
+        missing = len(asked - {wanted[s] for s in seen if s in wanted})
         off = max(0.0, abs(total - budget) / budget - BUDGET_BAND) if budget and total else 0.0
         spread = (
             max(abs(p.metrics["spend"] - per_day) for p in combo) / per_day  # type: ignore[operator]
@@ -187,7 +193,7 @@ def fit_budget(
                 "combo": list(combo),
                 "total": total,
                 "visits": visits,
-                "base": (repeats, round(off, 3)),
+                "base": (repeats, missing, round(off, 3)),
                 "rest": (round(max(0.0, spread - BUDGET_BAND), 2), ranks),
             }
         )
@@ -232,6 +238,7 @@ def assemble(
     profile: TripProfile,
     places_kind: dict[str, str] | None = None,
     shared: set[str] | None = None,
+    wanted: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """3 phương án: PA1 = lịch hạng 1 mỗi ngày, PA2 = hạng 2, PA3 = hạng 3 (ngày ít lịch hơn thì
     dùng lịch đi được tốt nhất còn lại). Trong một phương án không đi lại chỗ đã đi ở ngày trước
@@ -244,7 +251,7 @@ def assemble(
     options = []
     budget = profile.trip_budget
     use_budget = budget if form.spend_style != "unlimited" else None
-    fitted = fit_budget(ranked, s_cost, form, use_budget, places_kind, shared=shared)
+    fitted = fit_budget(ranked, s_cost, form, use_budget, places_kind, shared=shared, wanted=wanted)
     for k, (days_fit, est) in enumerate(fitted):
         day_costs = [p.metrics.get("cost") for p in days_fit]
         total = None
@@ -398,7 +405,8 @@ async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
     places = places_of(state)
     kinds = {pid: p.kind for pid, p in places.items()}
     musts = {pid for pid, p in places.items() if p.must}
-    trip = assemble(ranked, stay, form, profile, kinds, musts)
+    wanted = {pid: p.wanted for pid, p in places.items() if p.wanted and not p.must}
+    trip = assemble(ranked, stay, form, profile, kinds, musts, wanted)
     labels = better_at(trip["options"])
     serial = {
         "options": [

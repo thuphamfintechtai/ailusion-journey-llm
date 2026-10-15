@@ -18,7 +18,7 @@ Purpose = Literal["relax", "food", "culture", "fun", "adventure", "shopping"]
 GroupType = Literal["solo", "couple", "friends", "colleagues", "family"]
 
 
-Priority = Literal["saving", "comfort", "leisure", "short_time"]
+Priority = Literal["saving", "comfort", "leisure", "short_time", "many_places"]
 
 
 SpendStyle = Literal["normal", "unlimited", "luxury_within_budget"]
@@ -33,7 +33,7 @@ TravelMode = Literal["motorbike", "car", "bus", "taxi"]
 Walking = Literal["M1", "M2", "M3", "M4", "M5"]
 
 
-Group = Literal["P1", "P2", "P3", "P4"]
+Group = Literal["P1", "P2", "P3", "P4", "P5"]
 
 
 PURPOSE_NAMES: dict[str, str] = {
@@ -51,19 +51,37 @@ PURPOSE_NAMES: dict[str, str] = {
 PURPOSE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "relax": ("spa", "resort", "bãi biển", "biển", "hồ", "công viên", "suối nước nóng"),
     "food": ("nhà hàng", "quán ăn", "đặc sản", "hải sản", "chợ", "ẩm thực"),
-    "culture": ("bảo tàng", "chùa", "di tích", "nhà thờ", "phố cổ", "làng", "đền", "lăng"),
+    "culture": (
+        "bảo tàng",
+        "chùa",
+        "di tích",
+        "nhà thờ",
+        "phố cổ",
+        "làng cổ",
+        "làng nghề",
+        "làng chài",
+        "đền",
+        "lăng",
+    ),
     "fun": ("khu vui chơi", "công viên giải trí", "chợ đêm", "bar", "phố đi bộ", "show"),
     "adventure": ("núi", "thác", "trekking", "hang", "đèo", "rừng"),
     "shopping": ("chợ", "trung tâm thương mại", "cửa hàng lưu niệm"),
 }
 
 
-GROUP_NAMES = {"P1": "tiết kiệm", "P2": "đỡ mệt", "P3": "thong thả", "P4": "ít thời gian"}
+GROUP_NAMES = {
+    "P1": "tiết kiệm",
+    "P2": "đỡ mệt",
+    "P3": "thong thả",
+    "P4": "ít thời gian",
+    "P5": "đi nhiều chỗ",
+}
 PRIORITY_GROUP: dict[str, Group] = {
     "saving": "P1",
     "comfort": "P2",
     "leisure": "P3",
     "short_time": "P4",
+    "many_places": "P5",
 }
 
 
@@ -86,6 +104,8 @@ SORT_ORDER: dict[str, list[tuple[str, str]]] = {
     "P2": [("ride_min", "min"), ("num_stops", "min"), ("cost", "min")],
     "P3": [("num_stops", "min"), ("num_matches", "max"), ("quality", "max"), ("cost", "min")],
     "P4": [("ride_min", "min"), ("popularity", "max"), ("cost", "min")],
+    # Đi nhiều chỗ: nhiều điểm nhất → nhiều chỗ hợp ý → ít ngồi xe (để còn thời gian đi tiếp).
+    "P5": [("num_stops", "max"), ("num_matches", "max"), ("ride_min", "min")],
 }
 
 
@@ -93,7 +113,9 @@ SORT_ORDER: dict[str, list[tuple[str, str]]] = {
 DEFAULT_ARRIVAL = "11:00"
 DEFAULT_DEPARTURE = "15:00"
 DEFAULT_WAKE = "08:00"
-DEFAULT_NIGHT_RETURN = "22:00"
+# User không điền "Tối cần về chỗ ở trước" thì KHÔNG đặt luật về sớm: ngày kéo tới giờ phần lớn
+# chỗ đã đóng cửa (quy ước). Chỉ giờ user tự điền mới giới hạn buổi tối.
+DEFAULT_NIGHT_RETURN = "23:30"
 CHECKIN_MIN = 90  # thủ tục ở bến
 DEPARTURE_BUFFER_MIN = 30
 HUB_EXIT_MIN = 15  # ra khỏi bến
@@ -102,8 +124,28 @@ BUSY_TRAVEL_MIN = 15  # tới chỗ bận khi chưa biết vị trí
 LOW_FREE_MINUTES = 300  # B1: ngày rảnh ít
 LOW_BUDGET_RATIO = 1.5  # B3
 # Khung giờ ăn (quy ước sản phẩm, khớp luật 6 của Agent Planner). Bữa sáng ăn ở chỗ ở, không xếp.
+# Bữa sáng tới 10:00: ngày bắt đầu từ 09:30 trở về trước bắt buộc có bữa sáng (phủ ≥ 30 phút),
+# bắt đầu 10:00 hay chiều thì không.
+BREAKFAST = ("06:30", "10:00")
 LUNCH = ("11:00", "13:30")
 DINNER = ("18:00", "20:00")
+MEALS = {"sáng": BREAKFAST, "trưa": LUNCH, "tối": DINNER}
+# Ngày có ít nhất ngần này phút trong khung một bữa thì bắt buộc có bữa đó (quy ước sản phẩm:
+# ngày trọn vẹn phải đủ 3 bữa; ngày đến trưa / về sớm chỉ cần các bữa nằm trong giờ rảnh).
+MEAL_MIN_OVERLAP = 30
+
+
+def required_meals(day_start: str, day_end: str) -> list[str]:
+    """Các bữa bắt buộc của một ngày theo giờ rảnh: "sáng" / "trưa" / "tối"."""
+    a, b = to_minutes(day_start), to_minutes(day_end)
+    out = []
+    for name, (m0, m1) in MEALS.items():
+        overlap = min(b, to_minutes(m1)) - max(a, to_minutes(m0))
+        if overlap >= MEAL_MIN_OVERLAP:
+            out.append(name)
+    return out
+
+
 BUCKET_TIMES = {"morning": "09:00", "afternoon": "14:00", "evening": "19:00"}
 
 
@@ -180,6 +222,9 @@ class TripForm(BaseModel):
     seniors_65: int = Field(0, ge=0)
     wheelchair_users: int = Field(0, ge=0)
     required_needs: list[str] = Field(default_factory=list)
+    # Nhu cầu bắt buộc user gõ tự do (VD "ăn chay, ông đi xe lăn, không ăn cay"): bước 2 đổi ra mã
+    # `required_needs` được thì lọc chỗ; phần không đổi được đưa Planner như lưu ý bắt buộc.
+    needs_note: str = Field("", max_length=500)
     # Khung giờ
     arrival_time: str | None = None  # "HH:MM" hoặc morning / afternoon / evening
     departure_time: str | None = None

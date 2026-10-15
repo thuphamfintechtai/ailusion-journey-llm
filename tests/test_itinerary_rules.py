@@ -23,7 +23,7 @@ from ailusion.itinerary.agents.intake import (
 from ailusion.itinerary.agents.planner import PlanDraft, PlannerOutput, errors_of, plan_errors
 from ailusion.itinerary.coordinator.profile import profile_trip, questions_for
 from ailusion.itinerary.coordinator.rank import assemble, mark_beaten, rank
-from ailusion.itinerary.coordinator.score import capacity, pick_pool
+from ailusion.itinerary.coordinator.score import MEALS_PER_DAY, capacity, pick_pool
 from ailusion.itinerary.coordinator.simulate import check_plan, simulate
 from ailusion.itinerary.shared.form import TripForm, daily_budget
 from ailusion.itinerary.shared.math import pareto_tiers, rating_floor
@@ -109,13 +109,14 @@ def test_parse_clock(text: str, expected: str | None) -> None:
 # ---------------------------------------------------------------- bước 3–4
 
 
-def test_family_example_is_p2_with_free_minutes_600_525_270() -> None:
+def test_family_example_is_p2_with_free_minutes_750_525_270() -> None:
     profile = profile_trip(family_form(), stay_prices=[800_000], meal_prices=[100_000])
     assert profile.needs_care is True
     assert profile.nice_to_have_needs[:3] == ["kids", "high_chair", "baby_changing"]
-    assert profile.night_return_time == "21:00"
-    assert [d.free_minutes for d in profile.days] == [600, 525, 270]
-    assert profile.days[1].meal_only_slots == ["16:45–21:00"]
+    # Không tự đặt luật về sớm (kể cả có bé 4 tuổi): ngày kéo tới 23:30 nếu user không điền.
+    assert profile.night_return_time == "23:30"
+    assert [d.free_minutes for d in profile.days] == [750, 525, 270]
+    assert profile.days[1].meal_only_slots == ["16:45–23:30"]
     assert profile.days[2].day_end == "12:30"  # 15:00 − 90 − 30 − 30
     assert (profile.group, profile.rule) == ("P2", "B2")
     assert profile.sort_order[0] == ("ride_min", "min")
@@ -152,9 +153,9 @@ def test_rating_floor_matches_the_worked_examples() -> None:
     assert rating_floor(4.5, 0) is None
 
 
-def test_capacity_example_is_7_6_3() -> None:
+def test_capacity_example_is_9_6_3() -> None:
     days = profile_trip(family_form(), [], []).days
-    assert capacity(days, typical_stay=60, typical_hop=20) == [7, 6, 3]
+    assert capacity(days, typical_stay=60, typical_hop=20) == [9, 6, 3]
 
 
 def test_pareto_tiers() -> None:
@@ -187,10 +188,12 @@ def test_simulate_long_stay_hits_meal_only_slot() -> None:
     }
     matrix = {(STAY, "vui"): 25, ("vui", "cho"): 20, ("cho", STAY): 20}
     profile = profile_trip(family_form(), [], [])
+    # Ngày bắt đầu 10:00: không bắt bữa sáng; khu vui chơi trùm giờ trưa; tối dự tiệc từ 16:45.
+    window = profile.days[1].model_copy(update={"day_start": "10:00"})
     plan = DayPlan(id="L3", day=2, leave_stay="10:00", stops=["vui", "cho"])
-    short = simulate(plan, places, matrix, profile.days[1], [], long_stay=False)
+    short = simulate(plan, places, matrix, window, [], long_stay=False)
     assert not short.issues
-    reason = check_plan(plan, places, matrix, profile.days[1], profile, family_form())
+    reason = check_plan(plan, places, matrix, window, profile, family_form())
     assert plan.status == "risky"
     assert reason and "bớt 1 chỗ" in reason  # nhóm P2 trả Planner bớt 1 chỗ
 
@@ -423,14 +426,14 @@ def test_lunch_break_is_read_and_respected() -> None:
     run = simulate(
         late, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
     )
-    assert run.stops[0].start == 810 and run.issues == [
+    assert run.stops[0].start == 810 and [i for i in run.issues if "thiếu bữa" not in i] == [
         "tới bt lúc 11:30, phải chờ 120 phút tới 13:30 mới vào được"
     ]
     ok = DayPlan(id="L1", day=2, leave_stay="13:00", stops=["bt"])
     run = simulate(
         ok, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
     )
-    assert run.stops[0].start == 810 and not run.issues
+    assert run.stops[0].start == 810 and not [i for i in run.issues if "thiếu bữa" not in i]
     early = DayPlan(id="L2", day=2, leave_stay="10:30", stops=["bt"])
     run = simulate(
         early, pool, {(STAY, "bt"): 0, ("bt", STAY): 0}, profile.days[1], [], long_stay=False
@@ -549,6 +552,9 @@ def test_meals_must_fall_in_lunch_or_dinner() -> None:
     }
     breakfast = DayPlan(id="L1", day=2, leave_stay="08:00", stops=["q", "bt"])
     run = simulate(breakfast, places, m, profile.days[1], [], long_stay=False)
+    assert not any("ngoài giờ ăn" in i for i in run.issues)  # 08:05 là bữa sáng
+    afternoon = DayPlan(id="L0", day=2, leave_stay="14:30", stops=["q", "bt"])
+    run = simulate(afternoon, places, m, profile.days[1], [], long_stay=False)
     assert any("ngoài giờ ăn" in i for i in run.issues)
     lunch = DayPlan(id="L2", day=2, leave_stay="10:00", stops=["bt", "q"])
     run = simulate(lunch, places, m, profile.days[1], [], long_stay=False)
@@ -557,7 +563,7 @@ def test_meals_must_fall_in_lunch_or_dinner() -> None:
     places["bt2"] = _place("bt2", category="Chùa", stay_low=150, stay_high=150)
     m |= {("bt", "bt2"): 5, ("bt2", STAY): 5}
     run = simulate(hungry, places, m, profile.days[1], [], long_stay=False)
-    assert any("không có quán ăn" in i for i in run.issues)
+    assert any("thiếu bữa trưa" in i for i in run.issues)
 
 
 def test_code_moves_the_meal_into_lunch_time() -> None:
@@ -571,11 +577,13 @@ def test_code_moves_the_meal_into_lunch_time() -> None:
     }
     ids = ["bt", "chua", "q", STAY]
     m = {(a, b): 10 for a in ids for b in ids if a != b}
-    # Planner xếp quán đầu tiên lúc 09:00 (ngoài giờ ăn) -> code chuyển quán vào giờ trưa.
-    plan = DayPlan(id="L1", day=2, leave_stay="09:00", stops=["q", "bt", "chua"])
-    assert place_meals(plan, places, m, profile.days[1], [])
+    # Ngày bắt đầu 10:00; Planner xếp quán đầu tiên lúc 10:10 (đã qua giờ ăn sáng, chưa tới
+    # trưa) -> code chuyển quán vào giờ trưa.
+    window = profile.days[1].model_copy(update={"day_start": "10:00"})
+    plan = DayPlan(id="L1", day=2, leave_stay="10:00", stops=["q", "bt", "chua"])
+    assert place_meals(plan, places, m, window, [])
     assert plan.stops[0] != "q" and "q" in plan.stops  # không bỏ quán, chỉ dời
-    run = simulate(plan, places, m, profile.days[1], [], long_stay=False)
+    run = simulate(plan, places, m, window, [], long_stay=False)
     meal = next(st for st in run.stops if st.place_id == "q")
     assert 11 * 60 <= meal.start <= 13 * 60 + 30 and not run.issues
 
@@ -949,7 +957,7 @@ async def test_shortlist_keeps_one_branch_per_chain_for_the_whole_trip() -> None
     )  # cả chuyến không 2 quán cùng chuỗi, nên không ngày nào lặp chuỗi của ngày khác
     by_day = {d: [out["codes"][c] for c in cs] for d, cs in out["day_codes"].items()}
     chain_days = [d for d, pids in by_day.items() if "tn0" in pids]
-    assert len(chain_days) <= 1 or len(meals) < 2 * len(profile.days)
+    assert len(chain_days) <= 1 or len(meals) < MEALS_PER_DAY * len(profile.days)
 
 
 def test_place_meals_never_eats_one_chain_twice_a_day() -> None:
@@ -965,10 +973,11 @@ def test_place_meals_never_eats_one_chain_twice_a_day() -> None:
     m = {(x, y): 10.0 for x in ids for y in ids if x != y}
     window = profile.days[1]  # 08:00–21:00
     # Planner chọn 2 chi nhánh Tao Ngộ cho trưa và tối -> bỏ 1, bù quán khác chuỗi, khác món.
-    plan = DayPlan(id="L1", day=2, leave_stay="09:00", stops=["a", "tn0", "b", "c", "tn1"])
+    plan = DayPlan(id="L1", day=2, leave_stay="08:00", stops=["a", "tn0", "b", "c", "tn1"])
     place_meals(plan, places, m, window, ["tn2", "bt", "bc"])
     meals = [s for s in plan.stops if places[s].kind == "meal"]
-    assert sum(s.startswith("tn") for s in meals) == 1 and len(meals) == 2
+    # Ngày 08:00–21:00: đủ 3 bữa (sáng, trưa, tối), không 2 quán cùng chuỗi.
+    assert sum(s.startswith("tn") for s in meals) == 1 and len(meals) == 3
     assert "bc" in meals  # "Lẩu bò Ba Toa" cũng là lẩu -> chọn bánh căn cho khác món
     assert not simulate(plan, places, m, window, [], long_stay=False).issues
     # Bù bữa còn thiếu: chi nhánh khác của chuỗi đã ăn không được chọn.
@@ -1015,4 +1024,5 @@ def test_night_market_goes_last_instead_of_waiting_hours() -> None:
     run = simulate(plan, places, m, window, [], long_stay=False)
     market = next(s for s in run.stops if s.place_id == "cd")
     assert market.start >= 17 * 60 and market.wait <= 45
-    assert not run.issues
+    # Chỉ có 2 quán, không quán dự phòng: thiếu đúng 1 bữa, ngoài ra không lỗi gì.
+    assert len(run.issues) == 1 and run.issues[0].startswith("thiếu bữa")
