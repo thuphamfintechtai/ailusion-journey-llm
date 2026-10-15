@@ -540,3 +540,11 @@ def test_places_are_shared_out_in_turn() -> None:
     assert shares[0] == {"visit0", "visit3"}
     assert shares[1] == {"visit1", "visit4"}  # quán không chia
     assert not any("visit9" in s or "meal8" in s for s in shares)  # user chọn / nhắc: không chia
+
+
+def test_verification_only_looks_at_places_the_branches_will_plan_with() -> None:
+    from ailusion.itinerary.coordinator.filter import branch_pool
+
+    state = {"branches": [{"pool": ["m", "a1", "a2"]}, {"pool": ["m", "b1"]}, {"pool": ["c1"]}]}
+    # Xen kẽ giữa các nhánh, bỏ trùng: cắt theo trần vẫn chia đều cho 3 phương án.
+    assert branch_pool(state) == ["m", "c1", "a1", "b1", "a2"]

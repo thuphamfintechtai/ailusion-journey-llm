@@ -9,12 +9,13 @@ Mỗi bước do một làn làm, giống trang thiết kế (C = Coordinator, c
     4     hoi_lai           C            coordinator/profile.py  còn thiếu ý -> dừng, hỏi user
     5     tim_kiem          C            coordinator/search.py
     6     loc               C            coordinator/filter.py
-    6a/b  xac_minh          Experience   agents/experience.py    (C gửi 2 agent song song,
-                            Budget       agents/budget.py         coordinator/filter.py)
     7     cham              C            coordinator/score.py    (chọn chỗ ở)
-    8–14  lap_phuong_an     C            coordinator/branches.py 3 nhánh song song, mỗi nhánh 1
+    8     chot_nhanh        C            coordinator/branches.py 3 nhánh song song, mỗi nhánh chốt
+          · chot_danh_sach  C            coordinator/score.py    danh sách (chia ngày theo cụm gần)
+    6a/b  xac_minh          Experience   agents/experience.py    (C gửi 2 agent song song, chỉ các
+                            Budget       agents/budget.py         chỗ 3 nhánh sắp đưa Planner)
+    9–14  lap_phuong_an     C            coordinator/branches.py 3 nhánh song song, mỗi nhánh 1
                                                                   phương án với chỗ ưu tiên riêng:
-          · chot_danh_sach  C            coordinator/score.py    (chia ngày theo cụm gần nhau)
           · xep_lich        Planner      agents/planner.py
           · kiem_lich       C            coordinator/simulate.py (sắp lại thứ tự cho ít ngồi
                                                                   xe, đặt quán ăn; lệch ->
@@ -45,7 +46,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .agents.decision import quyet_dinh
 from .agents.intake import doc_loi_nhan
-from .coordinator.branches import lap_phuong_an
+from .coordinator.branches import chot_nhanh, lap_phuong_an
 from .coordinator.filter import loc, xac_minh
 from .coordinator.profile import after_profile, hoi_lai, nhan_form, phan_nhom
 from .coordinator.rank import ghep
@@ -62,8 +63,9 @@ Node = Callable[[ItineraryState, Ctx], Awaitable[dict[str, Any]]]
 MAIN_FLOW: list[Node] = [
     tim_kiem,
     loc,
-    xac_minh,
     cham,
+    chot_nhanh,
+    xac_minh,
     lap_phuong_an,
     ghep,
     quyet_dinh,

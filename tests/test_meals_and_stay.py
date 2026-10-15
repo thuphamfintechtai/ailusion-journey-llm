@@ -220,3 +220,46 @@ def test_overfull_short_day_drops_a_visit_but_keeps_user_picks():
     assert trim_visits(plan, places, m, w, [], []) >= 1
     assert "a" in plan.stops  # chỗ user chọn không bị bỏ
     assert not simulate(plan, places, m, w, [], False).issues
+
+
+def test_one_restaurant_per_meal_time_even_on_a_food_trip():
+    from ailusion.itinerary.coordinator.simulate import drop_extra_meals, simulate
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "meal", stay: int = 45, **kw) -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Chợ"
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=16.0,
+            lng=108.2,
+            stay_low=stay,
+            stay_high=stay,
+            **kw,
+        )
+
+    # Như lịch thật: ăn sáng, rồi 4 quán liền trong giờ trưa (11:00, 11:47, 12:35, 13:22).
+    places = {
+        "b": place("b"),
+        "v": place("v", "visit", 120),
+        "q1": place("q1"),
+        "q2": place("q2", wanted="bún cá"),
+        "q3": place("q3"),
+        "q4": place("q4"),
+        "d": place("d"),
+    }
+    ids = [*places, STAY]
+    m = {(a, b): 2.0 for a in ids for b in ids if a != b}
+    w = DayWindow(day=2, day_start="08:00", day_end="22:00", free_minutes=840)
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["b", "v", "q1", "q2", "q3", "q4", "d"])
+    assert any(
+        "bữa trưa trong một ngày" in i for i in simulate(plan, places, m, w, [], False).issues
+    )
+    # Bỏ q1, q3, q4; xong thì quán tối "d" dời lên giờ trưa (thành bữa trưa thứ 2) nên bỏ luôn —
+    # kiem_lich đặt lại quán tối đúng giờ ngay sau bước này (place_meals).
+    assert drop_extra_meals(plan, places, m, w, []) == 4
+    lunch = [s for s in plan.stops if s.startswith("q")]
+    assert lunch == ["q2"]  # giữ quán đúng món user nhắc
+    assert not any("bữa trưa" in i for i in simulate(plan, places, m, w, [], False).issues)

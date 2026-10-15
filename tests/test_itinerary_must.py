@@ -273,3 +273,21 @@ def test_vietmap_is_tried_before_serpapi_for_named_places() -> None:
     assert [n for n, _ in ctx.calls] == ["find_places", "find_nearby"]  # không gọi SerpApi
     near = ctx.calls[1][1]
     assert near["lat"] == 16.05 and near["radius_m"] == 50_000
+
+
+def test_every_group_choice_is_accepted_without_asking_again() -> None:
+    from ailusion.itinerary.coordinator.profile import QUESTIONS
+
+    base = {"night_return_time": "21:45"}
+    # Ô "Đi cùng ai" trên form (5 lựa chọn): chọn rồi thì không hỏi lại H1, kể cả "Gia đình" để
+    # trống số trẻ em / người lớn tuổi.
+    for group in ("solo", "couple", "friends", "colleagues", "family"):
+        p = profile_trip(_form(group_type=group, **base), [], [])
+        assert "H1" not in p.questions, group
+    # Câu hỏi lại H1: mọi lựa chọn đều trả lời xong câu hỏi, có lựa chọn gia đình toàn người lớn.
+    choices = dict(QUESTIONS["H1"]["choices"])
+    assert choices["Gia đình (người lớn)"] == {"group_type": "family"}
+    for label, answer in choices.items():
+        p = profile_trip(_form(**{"group_type": None, **base, **answer}), [], [])
+        assert "H1" not in p.questions, label
+    assert "H1" in profile_trip(_form(group_type=None, **base), [], []).questions

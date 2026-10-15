@@ -169,6 +169,42 @@ def reorder_visits(
     return True
 
 
+def drop_extra_meals(
+    plan: DayPlan,
+    places: dict[str, Place],
+    matrix: dict[tuple[str, str], float],
+    window: DayWindow,
+    required_needs: list[str],
+) -> int:
+    """Mỗi khung sáng / trưa / tối chỉ 1 quán (Planner hay xếp 4 quán liền trong giờ trưa khi
+    chuyến "ẩm thực"): giữ quán user chọn, rồi thứ user nhắc, rồi quán tới trước. Quán đang ngoài
+    giờ ăn thì giữ (bước đặt quán xếp lại giờ). Đổi `plan.stops` tại chỗ; trả số quán bỏ."""
+    dropped = 0
+    for _ in range(3):  # bỏ quán làm giờ các chỗ sau đổi: chạy lại tới khi ổn
+        run = simulate(plan, places, matrix, window, required_needs, long_stay=False)
+        by_window: dict[str | None, list[str]] = {}
+        for st in run.stops:
+            p = places[st.place_id]
+            if p.kind != "meal":
+                continue
+            name = next(
+                (n for n, (a, b) in MEALS.items() if to_minutes(a) <= st.start <= to_minutes(b)),
+                None,
+            )
+            by_window.setdefault(name, []).append(st.place_id)
+        extra: list[str] = []
+        for name, pids in by_window.items():
+            if name is None:
+                continue
+            ranked = sorted(pids, key=lambda q: (not places[q].must, not places[q].wanted))
+            extra += [q for q in ranked[1:] if not places[q].must]
+        if not extra:
+            break
+        plan.stops = [q for q in plan.stops if q not in extra]
+        dropped += len(extra)
+    return dropped
+
+
 MAX_TRIMS = 3  # bỏ bớt tối đa ngần này chỗ chơi khỏi một lịch quá dài
 # Lỗi do lịch nhồi quá nhiều chỗ: bỏ bớt 1 chỗ chơi thường hết (về trễ, chờ mở cửa lâu, ở quá giờ
 # đóng cửa, chạm giờ bận).
@@ -676,6 +712,14 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
     )
     if moved:
         await ctx.log("kiem_lich", "finding", f"Đặt lại quán ăn cho đúng giờ ở {moved} lịch")
+    # Quán thừa (2–4 bữa trong cùng giờ trưa…): mỗi khung giờ ăn giữ 1 quán.
+    extra_meals = sum(
+        drop_extra_meals(p, places, matrix, windows[p.day], needs) for p in plans.values()
+    )
+    if extra_meals:
+        await ctx.log("kiem_lich", "finding", f"Bỏ {extra_meals} quán thừa (mỗi giờ ăn 1 quán)")
+        for p in plans.values():  # bỏ quán làm giờ đổi: đặt lại quán cho đúng giờ ăn
+            place_meals(p, places, matrix, windows[p.day], spare[p.day])
     # Lịch nhồi quá nhiều chỗ (về trễ, chờ mở cửa lâu): code bỏ bớt chỗ chơi trước khi trả Planner.
     trimmed = sum(
         trim_visits(p, places, matrix, windows[p.day], spare[p.day], needs) for p in plans.values()
@@ -733,6 +777,7 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
                 )
                 reorder_visits(new, places, matrix, windows[d.day], spare[d.day], needs)
                 place_meals(new, places, matrix, windows[d.day], spare[d.day])
+                drop_extra_meals(new, places, matrix, windows[d.day], needs)
                 trim_visits(new, places, matrix, windows[d.day], spare[d.day], needs)
                 # sau sửa: gắn nhãn
                 check_plan(

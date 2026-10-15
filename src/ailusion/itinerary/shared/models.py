@@ -254,8 +254,7 @@ class ItineraryState(TypedDict, total=False):
     festival_dates: list[dict[str, Any]]  # {"name", "start", "end"} của lễ hội có ngày
     alerts: list[str]
     notes: list[str]
-    to_experience: list[str]
-    to_budget: list[str]
+    branches: list[dict[str, Any]]  # state riêng của từng nhánh sau chot_nhanh (branches.py)
     stay: dict[str, Any] | None
     pool: list[str]
     codes: dict[str, str]  # mã ngắn -> place_id

@@ -224,40 +224,53 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
     words = wanted_words(form.interests)
     for p in places.values():
         p.wanted = wanted_match(p, words)
-    # Gửi agent: chỗ không chứa từ khoá mục đích (6a), chỗ chơi chưa có giá (6b).
+    # Chỗ có từ khoá mục đích: tự nhận hợp mục đích. Chỗ còn lại Agent Experience xem sau, khi các
+    # nhánh đã chốt danh sách (`xac_minh`).
     for p in places.values():
         word = keyword_match(p, profile.purposes)
         if word:
             p.matches_purpose, p.match_by = True, f"từ khoá '{word}'"
-    to_exp = [
-        p.place_id
-        for p in sorted(places.values(), key=lambda p: -(p.rating_floor or 0))
-        if profile.purposes and p.matches_purpose is None and p.kind == "visit"
-    ][:MAX_PURPOSE_CHECKS]
-    to_bud = [
-        p.place_id
-        for p in sorted(places.values(), key=lambda p: -(p.reviews or 0))
-        if p.kind == "visit" and p.price is None
-    ][:MAX_PRICE_FINDS]
-    await ctx.log(
-        "loc",
-        "finding",
-        f"Còn {len(places)} chỗ; gửi Experience {len(to_exp)}, Budget {len(to_bud)}",
-    )
+    await ctx.log("loc", "finding", f"Còn {len(places)} chỗ")
     return {
         "places": dump_places(places),
         "notes": notes,
-        "to_experience": to_exp,
-        "to_budget": to_bud,
         "tool_log": logs,
     }
 
 
+def branch_pool(state: ItineraryState) -> list[str]:
+    """Chỗ các nhánh đưa Planner, gộp xen kẽ (1 chỗ nhánh 1, 1 chỗ nhánh 2…), bỏ trùng: cắt theo
+    trần vẫn chia đều cho các phương án."""
+    pools = [b.get("pool") or [] for b in state.get("branches") or []]
+    out: list[str] = []
+    for i in range(max((len(p) for p in pools), default=0)):
+        for pool in pools:
+            if i < len(pool) and pool[i] not in out:
+                out.append(pool[i])
+    return out
+
+
 async def xac_minh(state: ItineraryState, ctx: Ctx) -> dict:
-    """Bước 6a + 6b: gửi Agent Experience và Agent Budget chạy song song."""
+    """Bước 6a + 6b, sau khi các nhánh chốt danh sách: Agent Experience xem chỗ chơi chưa rõ hợp
+    mục đích, Agent Budget tìm giá có nguồn cho chỗ chơi đang dùng giá ước — chỉ trong các chỗ sắp
+    đưa Planner (chỗ user chọn / user nhắc đứng đầu danh sách mỗi nhánh), song song."""
     form, profile, places = form_of(state), profile_of(state), places_of(state)
+    pool = [pid for pid in branch_pool(state) if pid in places and places[pid].kind == "visit"]
+    to_exp = [pid for pid in pool if profile.purposes and places[pid].matches_purpose is None][
+        :MAX_PURPOSE_CHECKS
+    ]
+    to_bud = [
+        pid
+        for pid in pool
+        if places[pid].price is None or (places[pid].price_by or "").startswith("ước")
+    ][:MAX_PRICE_FINDS]
+    await ctx.log(
+        "xac_minh",
+        "step",
+        f"{len(pool)} chỗ chơi sắp đưa Planner; gửi Experience {len(to_exp)}, Budget {len(to_bud)}",
+    )
     a, b = await asyncio.gather(
-        check_purposes(ctx, places, state.get("to_experience") or [], profile.purposes),
-        find_prices(ctx, places, state.get("to_budget") or [], form.destination),
+        check_purposes(ctx, places, to_exp, profile.purposes),
+        find_prices(ctx, places, to_bud, form.destination),
     )
     return {"places": dump_places(places), **a.add(b).state()}

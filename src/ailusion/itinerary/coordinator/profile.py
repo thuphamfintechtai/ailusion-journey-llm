@@ -209,6 +209,7 @@ QUESTIONS: dict[str, dict[str, Any]] = {
             ["Cặp đôi", {"group_type": "couple"}],
             ["Bạn bè", {"group_type": "friends"}],
             ["Đồng nghiệp", {"group_type": "colleagues"}],
+            ["Gia đình (người lớn)", {"group_type": "family"}],
             ["Gia đình có trẻ nhỏ", {"group_type": "family", "kids_under_6": 1}],
             ["Có người lớn tuổi", {"group_type": "family", "seniors_65": 1}],
         ],
@@ -268,10 +269,10 @@ MAX_QUESTIONS = 3
 def questions_for(form: TripForm, profile: TripProfile) -> list[str]:
     """Mã câu hỏi còn thiếu, theo thứ tự ưu tiên của bước 4, tối đa 3 câu."""
     out = []
-    family_without_ages = form.group_type == "family" and not (
-        form.kids_under_6 or form.kids_6_12 or form.seniors_65
-    )
-    if form.group_type is None or family_without_ages:
+    # Chỉ hỏi khi chưa biết đi cùng ai. "Gia đình" mà không có trẻ em / người lớn tuổi là gia đình
+    # toàn người lớn: form đã có ô số trẻ em, người lớn tuổi (để 0 = không có), hỏi lại thì user
+    # chọn "Gia đình" xong vẫn bị hỏi "đi cùng ai".
+    if form.group_type is None:
         out.append("H1")
     if any(not s.busy_start for s in form.busy_slots):
         out.append("H5")

@@ -8,7 +8,10 @@ Tool distance_matrix chỉ nhận 25 điểm, nên một danh sách chung chỉ 
   thiếu). Quán ăn không chia: chia thì mỗi nhánh còn 1/3 số quán, toàn quán chỉ mở tối, lịch hỏng
   vì giờ ăn (chạy thử Đà Nẵng 3 ngày); 3 phương án giống nhau là do chỗ chơi, không phải quán. Chỗ
   user chọn và thứ user nhắc (VD bún bò) không chia: nhánh nào cũng có.
-- Mỗi nhánh: chot_danh_sach -> xep_lich (Planner) -> kiem_lich -> xep_hang, chạy song song.
+- `chot_nhanh`: mỗi nhánh chốt danh sách chỗ đưa Planner (chot_danh_sach), chạy song song.
+- `xac_minh` (coordinator/filter.py): Experience + Budget xem đúng các chỗ đó (gộp 3 nhánh, bỏ
+  trùng) — 1 lượt mỗi agent, kiểm chỗ sẽ thật sự vào lịch thay vì chỗ sao cao nhất cả điểm đến.
+- `lap_phuong_an`: mỗi nhánh xep_lich (Planner) -> kiem_lich -> xep_hang, chạy song song.
 - Chọn phương án lần lượt PA1 -> PA3 (`pick_option`): phương án sau ít trùng chỗ chơi nhất với
   phương án đã chọn trước, rồi mới tới chỗ dành cho nhánh khác.
 """
@@ -29,8 +32,19 @@ from .simulate import kiem_lich
 log = logging.getLogger(__name__)
 
 BRANCHES = 3
-STEPS = (chot_danh_sach, xep_lich, kiem_lich, xep_hang)
 SUMMED = ("llm_calls", "usage", "tool_log")  # khoá cộng dồn (reducer) của state
+# Phần state riêng của mỗi nhánh, giữ trong state["branches"] giữa chot_nhanh và lap_phuong_an.
+BRANCH_KEYS = (
+    "round",
+    "used",
+    "pool",
+    "codes",
+    "day_codes",
+    "must_codes",
+    "matrix",
+    "km_matrix",
+    "notes",
+)
 
 
 def split_shares(places: dict[str, Place], n: int = BRANCHES) -> list[set[str]]:
@@ -45,13 +59,15 @@ def split_shares(places: dict[str, Place], n: int = BRANCHES) -> list[set[str]]:
     return shares
 
 
-async def run_branch(state: ItineraryState, ctx: Ctx, k: int, others: set[str]) -> dict[str, Any]:
-    """Một nhánh trên bản state riêng; trả state của nhánh (khoá cộng dồn đã gộp)."""
-    sub: dict[str, Any] = {**state, "round": k, "used": sorted(others)}
+async def run_steps(
+    state: ItineraryState, ctx: Ctx, node: str, base: dict[str, Any], steps: tuple[Any, ...]
+) -> dict[str, Any]:
+    """Chạy `steps` trên bản state riêng của nhánh (`base` đè lên state); khoá cộng dồn gộp lại."""
+    sub: dict[str, Any] = {**state, **base}
     for key in SUMMED:
         sub[key] = 0 if key == "llm_calls" else []
-    lane = ctx.branch("lap_phuong_an", f"pa{k}")
-    for step in STEPS:
+    lane = ctx.branch(node, f"pa{sub['round']}")
+    for step in steps:
         out = await step(sub, lane)  # type: ignore[arg-type]
         for key in SUMMED:
             if key in out:
@@ -60,40 +76,77 @@ async def run_branch(state: ItineraryState, ctx: Ctx, k: int, others: set[str]) 
     return sub
 
 
-async def lap_phuong_an(state: ItineraryState, ctx: Ctx) -> dict:
-    places = places_of(state)
-    shares = split_shares(places)
-    await ctx.log(
-        "lap_phuong_an",
-        "step",
-        f"Lập {BRANCHES} phương án song song, mỗi phương án ưu tiên "
-        f"~{min(len(s) for s in shares)} chỗ riêng",
-    )
-    runs = await asyncio.gather(
-        *(
-            run_branch(state, ctx, k + 1, set().union(*(s for j, s in enumerate(shares) if j != k)))
-            for k in range(BRANCHES)
-        ),
-        return_exceptions=True,
-    )
-    runs = list(runs)
-    for k, r in enumerate(runs):
-        if isinstance(r, BaseException):  # nhánh lỗi (VD Planner trả lời hỏng): chạy lại 1 lần
-            log.warning("lap_phuong_an: nhánh %d lỗi, chạy lại", k + 1, exc_info=r)
-            others = set().union(*(s for j, s in enumerate(shares) if j != k))
-            try:
-                runs[k] = await run_branch(state, ctx, k + 1, others)
-                continue
-            except Exception as e:  # noqa: BLE001 - các nhánh khác vẫn ra phương án
-                runs[k] = e
-                log.warning("lap_phuong_an: nhánh %d lỗi lần 2", k + 1, exc_info=e)
-            await ctx.branch("lap_phuong_an", f"pa{k + 1}").log(
-                "lap_phuong_an", "error", f"Phương án {k + 1} lỗi: {type(r).__name__}"
-            )
-    done = [(k + 1, r) for k, r in enumerate(runs) if not isinstance(r, BaseException)]
+async def all_branches(
+    ctx: Ctx, node: str, bases: list[dict[str, Any]], run: Any
+) -> list[tuple[int, dict[str, Any]]]:
+    """Chạy `run(base)` cho mọi nhánh song song; nhánh lỗi (VD Planner trả lời hỏng) chạy lại 1
+    lần, vẫn lỗi thì bỏ nhánh đó (các nhánh khác vẫn ra phương án). Không nhánh nào xong: ném."""
+    runs: list[Any] = list(await asyncio.gather(*(run(b) for b in bases), return_exceptions=True))
+    for i, r in enumerate(runs):
+        if not isinstance(r, BaseException):
+            continue
+        k = bases[i]["round"]
+        log.warning("%s: nhánh %d lỗi, chạy lại", node, k, exc_info=r)
+        try:
+            runs[i] = await run(bases[i])
+            continue
+        except Exception as e:  # noqa: BLE001
+            runs[i] = e
+            log.warning("%s: nhánh %d lỗi lần 2", node, k, exc_info=e)
+        await ctx.branch(node, f"pa{k}").log(
+            node, "error", f"Phương án {k} lỗi: {type(r).__name__}"
+        )
+    done = [(bases[i]["round"], r) for i, r in enumerate(runs) if not isinstance(r, BaseException)]
     if not done:
-        raise runs[0]  # type: ignore[misc]
+        raise runs[0]
+    return done
 
+
+def summed(done: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
+    return {
+        "llm_calls": sum(sub["llm_calls"] for _, sub in done),
+        "usage": [u for _, sub in done for u in sub["usage"]],
+        "tool_log": [t for _, sub in done for t in sub["tool_log"]],
+    }
+
+
+async def chot_nhanh(state: ItineraryState, ctx: Ctx) -> dict:
+    """Bước 8 của 3 nhánh: mỗi nhánh chốt danh sách chỗ (ưu tiên phần chỗ chơi của mình)."""
+    shares = split_shares(places_of(state))
+    await ctx.log(
+        "chot_nhanh",
+        "step",
+        f"Chia chỗ cho {BRANCHES} phương án, mỗi phương án ưu tiên "
+        f"~{min(len(s) for s in shares)} chỗ chơi riêng",
+    )
+    bases = [
+        {"round": k + 1, "used": sorted(set().union(*(s for j, s in enumerate(shares) if j != k)))}
+        for k in range(BRANCHES)
+    ]
+    done = await all_branches(
+        ctx,
+        "chot_nhanh",
+        bases,
+        lambda b: run_steps(state, ctx, "chot_nhanh", b, (chot_danh_sach,)),
+    )
+    first = done[0][1]
+    return {
+        "branches": [{key: sub[key] for key in BRANCH_KEYS if key in sub} for _, sub in done],
+        "places": first["places"],  # chot_danh_sach có thể dời ngày ghim (như nhau mọi nhánh)
+        **summed(done),
+    }
+
+
+async def lap_phuong_an(state: ItineraryState, ctx: Ctx) -> dict:
+    """Bước 9–14 của 3 nhánh: Planner xếp lịch, chạy thử, xếp hạng; rồi chọn PA1 -> PA3."""
+    places = places_of(state)
+    await ctx.log("lap_phuong_an", "step", f"Lập {len(state['branches'])} phương án song song")
+    done = await all_branches(
+        ctx,
+        "lap_phuong_an",
+        list(state["branches"]),
+        lambda b: run_steps(state, ctx, "lap_phuong_an", b, (xep_lich, kiem_lich, xep_hang)),
+    )
     options: list[dict[str, Any]] = []
     kept: dict[str, dict[str, Any]] = {}
     matrix: dict[str, float] = {}
@@ -122,12 +175,9 @@ async def lap_phuong_an(state: ItineraryState, ctx: Ctx) -> dict:
         "kept_plans": kept,
         "first_ranked": {d: [f"V{k1}-{i}" for i in ids] for d, ids in first["ranked"].items()},
         "first_reasons": first.get("reasons") or {},
-        "places": first["places"],  # chot_danh_sach có thể dời ngày ghim (như nhau mọi nhánh)
         "pool": first["pool"],
         "matrix": matrix,
         "km_matrix": km_matrix,
         "notes": notes,
-        "llm_calls": sum(sub["llm_calls"] for _, sub in done),
-        "usage": [u for _, sub in done for u in sub["usage"]],
-        "tool_log": [t for _, sub in done for t in sub["tool_log"]],
+        **summed(done),
     }

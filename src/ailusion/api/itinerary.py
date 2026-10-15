@@ -63,8 +63,13 @@ async def chat_plan(thread_id: str, form: TripForm, request: Request) -> ChatPla
 async def run_itinerary(app: FastAPI, form: TripForm) -> ItineraryResponse:
     thread_id = form.thread_id or f"plan-{uuid.uuid4().hex[:12]}"
     graph = await itinerary_graph(app)
+    run_id = uuid.uuid4()  # run gốc trên LangSmith, trả về để web mở thẳng trace của lượt này
     config = run_config(
-        thread_id=thread_id, graph="itinerary", user_id=form.user_id, session_id=thread_id
+        thread_id=thread_id,
+        graph="itinerary",
+        user_id=form.user_id,
+        session_id=thread_id,
+        run_id=run_id,
     )
     # Mã đã dùng cho lần chạy trước (bấm lại, gửi lại): xoá state cũ. Không thì các trường cộng
     # dồn (số lượt LLM, token, nhật ký tool) cộng tiếp, và kết quả cũ (`trip`, `decision`) còn
@@ -83,6 +88,7 @@ async def run_itinerary(app: FastAPI, form: TripForm) -> ItineraryResponse:
         raise HTTPException(status_code=422, detail=str(e)) from e
     response = to_response(state, thread_id, time.monotonic() - started)
     response.trace = await read_trace(thread_id)
+    response.trace_run_id = str(run_id)
     return response
 
 

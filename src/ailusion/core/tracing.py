@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -147,6 +148,7 @@ def run_config(
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     recursion_limit: int = 50,
+    run_id: uuid.UUID | None = None,
 ) -> RunnableConfig:
     """Config một lượt chạy graph: thread giữ checkpoint, tag/session/user của trace.
 
@@ -154,6 +156,7 @@ def run_config(
     - graph: "chat" | "itinerary" -> thành tag + run_name để lọc trace.
     - session_id: gom nhiều lượt thành một session trên Langfuse; mặc định = thread_id.
     - checkpoint_id: chạy lại từ một checkpoint cụ thể.
+    - run_id: mã run gốc trên LangSmith (đặt trước để trả về cho web dựng link tới đúng trace).
     """
     all_tags = [f"graph:{graph}", *(tags or [])]
     return RunnableConfig(
@@ -163,6 +166,7 @@ def run_config(
         tags=all_tags,
         run_name=f"graph_{graph}",
         recursion_limit=recursion_limit,
+        **({"run_id": run_id} if run_id else {}),
     )
 
 

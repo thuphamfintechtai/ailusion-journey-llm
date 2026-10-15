@@ -333,7 +333,9 @@ class PackItem(BaseModel):
 
 
 class ItineraryResponse(BaseModel):
+    # Mã để tìm trace khi debug: Langfuse session = thread_id, LangSmith run gốc = trace_run_id.
     thread_id: str
+    trace_run_id: str | None = None
     status: Literal["ok", "need_info"]
     destination: str
     start_date: str

@@ -31,7 +31,9 @@ Quán Y, loại "Cửa hàng", review có câu "nổi tiếng với mì Quảng 
 """
 
 
-MAX_PURPOSE_CHECKS = 8
+# Chỗ chơi Agent Experience xem mỗi lộ trình (trong các chỗ 3 nhánh sắp đưa Planner): mỗi chỗ ~1
+# lượt get_place_reviews (DB trước) và ~0,5k token trong 1 lượt LLM.
+MAX_PURPOSE_CHECKS = 20
 REVIEWS_PER_PLACE = 8  # review đưa Agent Experience mỗi chỗ (1 trang get_place_reviews)
 REVIEW_CHARS = 300
 # Đọc review đã lưu trong DB trước; DB dưới 3 review mới gọi SerpApi.
