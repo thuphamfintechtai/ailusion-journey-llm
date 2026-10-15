@@ -136,43 +136,76 @@ def fit_budget(
     ranked: dict[int, list[DayPlan]],
     s_cost: int | None,
     form: TripForm,
-    budget: int,
+    budget: int | None,
     places_kind: dict[str, str],
     want: int = 3,
-) -> list[tuple[list[DayPlan], int]]:
-    """Tối đa `want` tổ hợp lịch (mỗi ngày 1 lịch) sát ngân sách nhất. Thứ tự so: ít chỗ chơi lặp
-    giữa các ngày → tổng lệch ngân sách ngoài ±5% ít nhất → các ngày tiêu đều (lệch so với phần
-    chia đều ngoài ±5% ít nhất) → tổng hạng các lịch nhỏ nhất (điều nhóm khách coi trọng)."""
+    shared: set[str] | None = None,
+) -> list[tuple[list[DayPlan], int | None]]:
+    """Tối đa `want` phương án (mỗi ngày 1 lịch), KHÁC NHAU thật sự.
+
+    PA1: ít chỗ chơi lặp giữa các ngày → tổng lệch ngân sách ngoài ±5% ít nhất → các ngày tiêu
+    đều → tổng hạng các lịch nhỏ nhất (điều nhóm khách coi trọng). PA2, PA3: cùng thứ tự, nhưng
+    sau luật ngân sách thì ưu tiên tổ hợp có ít chỗ chơi trùng với các phương án đã chọn nhất,
+    để 3 phương án cho 3 lựa chọn khác nhau chứ không chỉ lệch 1 lịch. `shared`: chỗ phương án nào
+    cũng phải có (user chọn), không tính là trùng. `budget` None: bỏ qua luật tiền."""
+    shared = shared or set()
     days = sorted(ranked)
     cand: dict[int, list[DayPlan]] = {}
     for d in days:
-        ok = [p for p in ranked[d] if p.status != "fail" and p.metrics.get("spend") is not None]
+        ok = [
+            p
+            for p in ranked[d]
+            if p.status != "fail" and (budget is None or p.metrics.get("spend") is not None)
+        ]
         if not ok:
             return []
         cand[d] = ok[:CANDIDATES_PER_DAY]
-    fixed = (s_cost or 0) + form.prepaid_tickets * form.group_size / (1 + EXTRA_MID)
-    per_day = (budget / (1 + EXTRA_MID) - fixed) / len(days)
-    scored = []
+    per_day = 0.0
+    if budget:
+        fixed = (s_cost or 0) + form.prepaid_tickets * form.group_size / (1 + EXTRA_MID)
+        per_day = (budget / (1 + EXTRA_MID) - fixed) / len(days)
+    rows = []
     for combo in itertools.product(*(cand[d] for d in days)):
         total = trip_estimate(list(combo), s_cost, form)
-        if total is None:
+        if budget and total is None:
             continue
         seen: set[str] = set()
         repeats = 0
         for p in combo:
             repeats += sum(s in seen and places_kind.get(s) != "meal" for s in p.stops)
             seen |= set(p.stops)
-        off = max(0.0, abs(total - budget) / budget - BUDGET_BAND)
+        visits = {s for s in seen if places_kind.get(s) != "meal" and s not in shared}
+        off = max(0.0, abs(total - budget) / budget - BUDGET_BAND) if budget and total else 0.0
         spread = (
             max(abs(p.metrics["spend"] - per_day) for p in combo) / per_day  # type: ignore[operator]
             if per_day > 0
             else 0.0
         )
         ranks = sum(cand[d].index(p) for d, p in zip(days, combo, strict=True))
-        key = (repeats, round(off, 3), round(max(0.0, spread - BUDGET_BAND), 2), ranks)
-        scored.append((key, list(combo), total))
-    scored.sort(key=lambda t: t[0])
-    return [(combo, total) for _key, combo, total in scored[:want]]
+        rows.append(
+            {
+                "combo": list(combo),
+                "total": total,
+                "visits": visits,
+                "base": (repeats, round(off, 3)),
+                "rest": (round(max(0.0, spread - BUDGET_BAND), 2), ranks),
+            }
+        )
+    if not rows:
+        return []
+    picked = [min(rows, key=lambda r: (r["base"], r["rest"]))]
+    while len(picked) < want:
+        used = set().union(*(r["visits"] for r in picked))
+        sigs = {tuple(p.id for p in r["combo"]) for r in picked}
+        left = [r for r in rows if tuple(p.id for p in r["combo"]) not in sigs]
+        if not left:
+            break
+
+        def overlap(r: dict[str, Any], used: set[str] = used) -> float:
+            return round(len(r["visits"] & used) / max(1, len(r["visits"])), 2)
+
+        picked.append(min(left, key=lambda r: (r["base"], overlap(r), r["rest"])))
+    return [(r["combo"], r["total"]) for r in picked]
 
 
 def budget_note(estimate: int | None, budget: int | None) -> str | None:
@@ -198,6 +231,7 @@ def assemble(
     form: TripForm,
     profile: TripProfile,
     places_kind: dict[str, str] | None = None,
+    shared: set[str] | None = None,
 ) -> dict[str, Any]:
     """3 phương án: PA1 = lịch hạng 1 mỗi ngày, PA2 = hạng 2, PA3 = hạng 3 (ngày ít lịch hơn thì
     dùng lịch đi được tốt nhất còn lại). Trong một phương án không đi lại chỗ đã đi ở ngày trước
@@ -209,17 +243,21 @@ def assemble(
     s_cost = stay_cost(stay, form)
     options = []
     budget = profile.trip_budget
-    fitted = (
-        fit_budget(ranked, s_cost, form, budget, places_kind)
-        if budget and form.spend_style != "unlimited"
-        else []
-    )
+    use_budget = budget if form.spend_style != "unlimited" else None
+    fitted = fit_budget(ranked, s_cost, form, use_budget, places_kind, shared=shared)
     for k, (days_fit, est) in enumerate(fitted):
         day_costs = [p.metrics.get("cost") for p in days_fit]
         total = None
         if all(c is not None for c in day_costs) and s_cost is not None:
             total = int(sum(day_costs) + s_cost + form.prepaid_tickets * form.group_size)  # type: ignore[arg-type]
-        options.append({"id": f"PA{k + 1}", "days": days_fit, "total_cost": total, "estimate": est})
+        options.append(
+            {
+                "id": f"PA{k + 1}",
+                "days": days_fit,
+                "total_cost": total,
+                "estimate": est if est is not None else trip_estimate(days_fit, s_cost, form),
+            }
+        )
     for k in range(0 if not fitted else 3, 3):
         days: list[DayPlan] = []
         visited: set[str] = set()
@@ -357,8 +395,10 @@ async def ghep(state: ItineraryState, ctx: Ctx) -> dict:
     plans = plans_of(state)
     ranked = {int(d): [plans[i] for i in ids] for d, ids in state["ranked"].items()}
     stay = place_from_dict(state["stay"]) if state.get("stay") else None
-    kinds = {pid: p.kind for pid, p in places_of(state).items()}
-    trip = assemble(ranked, stay, form, profile, kinds)
+    places = places_of(state)
+    kinds = {pid: p.kind for pid, p in places.items()}
+    musts = {pid for pid, p in places.items() if p.must}
+    trip = assemble(ranked, stay, form, profile, kinds, musts)
     labels = better_at(trip["options"])
     serial = {
         "options": [
