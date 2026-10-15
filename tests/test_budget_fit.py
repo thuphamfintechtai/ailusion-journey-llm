@@ -109,3 +109,68 @@ def test_planner_gets_an_even_daily_target() -> None:
     assert day_target(state) == 1_215_000
     lux = {**state, "form": _form(spend_style="unlimited").model_dump(mode="json")}
     assert day_target(lux) is None
+
+
+def _diverse_ranked() -> dict[int, list[DayPlan]]:
+    # Mỗi ngày 4 lịch cùng mức tiền; lịch "a" và "b" chỉ lệch 1 chỗ, lịch "c", "d" khác hẳn.
+    out = {}
+    for d in (1, 2, 3):
+        out[d] = [
+            _plan(d, "a", 1_000_000, [f"x{d}", f"y{d}", "must"]),
+            _plan(d, "b", 1_000_000, [f"x{d}", f"z{d}", "must"]),
+            _plan(d, "c", 1_000_000, [f"p{d}", f"q{d}", "must"]),
+            _plan(d, "d", 1_000_000, [f"r{d}", f"s{d}", "must"]),
+        ]
+    return out
+
+
+def test_three_options_visit_different_places() -> None:
+    from ailusion.itinerary.coordinator.rank import fit_budget
+
+    form = _form(budget=None)
+    kinds = {f"{c}{d}": "visit" for c in "xyzpqrs" for d in (1, 2, 3)} | {"must": "visit"}
+    picked = fit_budget(_diverse_ranked(), 0, form, None, kinds, shared={"must"})
+    visits = [{s for p in combo for s in p.stops} - {"must"} for combo, _ in picked]
+    assert len(picked) == 3
+    # PA2, PA3 không trùng chỗ chơi nào với PA1 (còn lịch khác hẳn để chọn); "must" không tính.
+    assert not visits[0] & visits[1] and not visits[0] & visits[2] and not visits[1] & visits[2]
+
+
+def test_planner_may_not_just_reorder_the_same_places() -> None:
+    from ailusion.itinerary.agents.planner import PlanDraft, PlannerOutput, plan_errors
+
+    out = PlannerOutput(
+        days=[
+            {
+                "day": 1,
+                "plans": [
+                    PlanDraft(id="L1", leave_stay="08:00", stops=["D1", "Q1", "D2"]),
+                    PlanDraft(
+                        id="L2", leave_stay="08:00", stops=["D2", "D1", "Q2"]
+                    ),  # đổi thứ tự / quán
+                    PlanDraft(id="L3", leave_stay="08:00", stops=["D3", "Q1"]),
+                ],
+            }
+        ]
+    )
+    allowed = {1: ["D1", "D2", "D3", "Q1", "Q2"]}
+    errors = plan_errors(out, {"D1", "D2", "D3", "Q1", "Q2"}, {1: "08:00"}, None, allowed)
+    assert errors[1] == [
+        "L2: cùng bộ chỗ chơi với một lịch khác (chỉ đổi thứ tự / quán), đổi ít nhất 1 chỗ chơi"
+    ]
+    few = {1: ["D1", "D2", "Q1", "Q2"]}  # ngày chỉ có 2 chỗ chơi: không bắt (không đổi được)
+    assert 1 not in plan_errors(
+        PlannerOutput(
+            days=[
+                {
+                    "day": 1,
+                    "plans": out.days[0].plans[:2]
+                    + [PlanDraft(id="L3", leave_stay="08:00", stops=["D1"])],
+                }
+            ]
+        ),
+        {"D1", "D2", "Q1", "Q2"},
+        {1: "08:00"},
+        None,
+        few,
+    )

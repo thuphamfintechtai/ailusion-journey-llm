@@ -51,6 +51,8 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 # Làm các lịch khác nhau thật sự
 
 Các lịch của một ngày nên khác nhau về kiểu: một lịch ít chỗ, ít ngồi xe; một lịch nhiều chỗ hợp sở thích; một lịch chọn chỗ được đánh giá cao nhất; gom chỗ gần nhau (xem phút đi) để đỡ chạy qua lại.
+
+Khác nhau ở CHỖ CHƠI, không chỉ ở thứ tự hay quán ăn: 2 lịch cùng ngày không được có cùng một bộ chỗ chơi D…; cố để mỗi lịch có ít nhất một nửa chỗ chơi khác các lịch kia, dùng cả các chỗ ít được chọn trong danh sách của ngày. Hệ thống ghép 3 phương án từ các lịch này nên lịch giống nhau thì 3 phương án cũng giống nhau. (Chỗ BẮT BUỘC thì lịch nào cũng có, không tính.)
 """
 
 
@@ -109,6 +111,8 @@ def plan_errors(
             errors[day] = [f"thiếu ngày {day}"]
             continue
         sigs = set()
+        visit_sets: set[frozenset[str]] = set()
+        dup_sigs: set[tuple[str, ...]] = set()
         for p in d.plans:
             bad = [c for c in p.stops if c not in codes]
             if bad:
@@ -133,6 +137,19 @@ def plan_errors(
             if sig in sigs:
                 errs.append(f"{p.id}: trùng hệt một lịch khác")
             sigs.add(sig)
+            # Cùng bộ chỗ chơi, chỉ đổi thứ tự / quán: chỉ bắt khi ngày có đủ chỗ để đổi.
+            must = set((required or {}).get(day, []))
+            own = frozenset(c for c in p.stops if c.startswith("D") and c not in must)
+            pool = [
+                c for c in (allowed or {}).get(day, codes) if c.startswith("D") and c not in must
+            ]
+            if own and len(pool) >= MIN_PLANS_PER_DAY and own in visit_sets and sig not in dup_sigs:
+                errs.append(
+                    f"{p.id}: cùng bộ chỗ chơi với một lịch khác (chỉ đổi thứ tự / quán), "
+                    "đổi ít nhất 1 chỗ chơi"
+                )
+            visit_sets.add(own)
+            dup_sigs.add(sig)
         if len(d.plans) < MIN_PLANS_PER_DAY:
             errs.append(f"chỉ có {len(d.plans)} lịch, cần ít nhất {MIN_PLANS_PER_DAY}")
         if errs:
