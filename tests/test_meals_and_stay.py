@@ -9,11 +9,14 @@ from ailusion.itinerary.shared.models import DayPlan, DayWindow
 
 
 def test_meals_follow_when_the_day_starts_and_ends() -> None:
-    assert required_meals("09:00", "21:00") == ["sáng", "trưa", "tối"]  # đi 9h: phải ăn sáng
-    assert required_meals("09:30", "21:00") == ["sáng", "trưa", "tối"]
-    assert required_meals("10:00", "21:00") == ["trưa", "tối"]  # đi 10h: không cần bữa sáng
-    assert required_meals("13:00", "21:00") == ["trưa", "tối"]  # đi 13h vẫn kịp bữa trưa
-    assert required_meals("14:00", "21:00") == ["tối"]  # đi chiều: chỉ bữa tối
+    # Bộ quy tắc ăn uống: dậy / bắt đầu ≤ 08:00 đủ 3 bữa; 08:00–11:00 bữa sáng tuỳ chọn; 11:00–13:00
+    # bữa trưa là bữa đầu; sau 13:00 không bắt buộc bữa trưa.
+    assert required_meals("07:00", "21:00") == ["sáng", "trưa", "tối"]
+    assert required_meals("08:00", "21:00") == ["sáng", "trưa", "tối"]
+    assert required_meals("09:00", "21:00") == ["trưa", "tối"]  # ăn sáng muộn: tuỳ
+    assert required_meals("11:30", "21:00") == ["trưa", "tối"]
+    assert required_meals("13:00", "21:00") == ["tối"]  # bắt đầu 13h: không ép bữa trưa
+    assert required_meals("14:00", "21:00") == ["tối"]
     assert required_meals("08:00", "18:15") == ["sáng", "trưa"]  # về trước 18:30: không bữa tối
     assert required_meals("08:00", "12:30") == ["sáng", "trưa"]  # ngày cuối về trưa
 
@@ -122,10 +125,11 @@ def test_long_day_rests_at_the_stay_after_lunch():
     long_day = DayWindow(day=2, day_start="07:00", day_end="22:00", nap=True, free_minutes=600)
     plan = DayPlan(id="L1", day=2, leave_stay="07:00", stops=["b", "v1", "l", "v2", "d"])
     run = simulate(plan, places, m, long_day, [], long_stay=False)
-    # Ăn trưa 11:00–11:45 -> về chỗ ở 12:00, nghỉ tới 13:30 -> chỗ chiều tính từ chỗ ở (13:45).
-    assert run.rest == (2, 12 * 60, 13 * 60 + 30, STAY)
+    # Tới quán trưa 10:30 (sớm hơn mốc 11:30 quá 45 phút: ăn luôn, vẫn trong khung dịch 1 tiếng)
+    # -> về chỗ ở 11:30, nghỉ tới 13:00 -> chỗ chiều tính từ chỗ ở (13:15).
+    assert run.rest == (2, 11 * 60 + 30, 13 * 60, STAY)
     v2 = run.stops[3]
-    assert v2.arrive == 13 * 60 + 45
+    assert v2.arrive == 13 * 60 + 15
     assert not run.issues  # chiều 13:45–17:15, tới quán tối 17:30 chờ 30 phút
     # Chiều bỏ trống (chỗ chiều ngắn): không còn coi trống tới 18:00 là tự do -> lỗi giờ ăn tối.
     places["v2"].stay_low = 60
@@ -373,3 +377,35 @@ def test_long_day_with_only_restaurants_gets_places_to_visit():
         )
         == 0
     )  # ngày ngắn: không bù
+
+
+def test_two_meals_must_be_at_least_two_hours_apart():
+    from ailusion.itinerary.coordinator.simulate import drop_bad_meals, simulate
+    from ailusion.itinerary.shared.form import skipped_meals
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "meal", stay: int = 45) -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Bảo tàng"
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=16.0,
+            lng=108.2,
+            stay_low=stay,
+            stay_high=stay,
+        )
+
+    # Ăn sáng 8:15 rồi 9:20 lại vào quán cà phê (lịch Huế thật): quá sát -> lỗi, bước sửa bỏ quán 2.
+    places = {"b": place("b"), "c": place("c"), "v": place("v", "visit", 120), "l": place("l")}
+    ids = [*places, STAY]
+    m = {(a, b): 15.0 for a in ids for b in ids if a != b}
+    w = DayWindow(day=2, day_start="08:00", day_end="14:00", free_minutes=360)
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["b", "c", "v", "l"])
+    assert any("chỉ cách bữa trước" in i for i in simulate(plan, places, m, w, [], False).issues)
+    assert drop_bad_meals(plan, places, m, w, []) == 1 and "c" not in plan.stops
+    # Ghi rõ bữa không xếp / tuỳ chọn để không ai tự thêm lại.
+    assert skipped_meals("10:00", "22:00") == [
+        "Bữa sáng tuỳ chọn: ngày bắt đầu 10:00, có thể ăn sáng muộn"
+    ]

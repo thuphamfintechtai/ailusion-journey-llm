@@ -377,8 +377,10 @@ async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None
     # Chưa chọn phương tiện: ước cả xe máy; không bao giờ có bus.
     assert all({"motorbike", "car", "taxi"} <= {a.mode for a in i.travel_alt} for i in legs)
     assert all(a.mode != "bus" for i in legs for a in i.travel_alt)
+    # Tổng phút đi cả ngày gồm cả chặng tới chỗ nghỉ trưa (mục "rest").
+    rides = legs + [i for i in d1.items if i.type == "rest" and i.travel_alt]
     assert {a.mode: a.minutes for a in d1.ride_alt}["car"] == sum(
-        {a.mode: a.minutes for a in i.travel_alt}["car"] for i in legs
+        {a.mode: a.minutes for a in i.travel_alt}["car"] for i in rides
     )
     for o in resp.options:
         cb = o.cost_breakdown
