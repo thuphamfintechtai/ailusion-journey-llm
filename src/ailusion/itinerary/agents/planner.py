@@ -50,7 +50,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
 5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau.
 6. Bữa ăn: dòng "Ngày …" ghi bữa BẮT BUỘC của ngày (và bữa tuỳ chọn / không xếp) — tính sẵn theo giờ bắt đầu ngày: bắt đầu ≤ 08:00 đủ sáng + trưa + tối, bữa sáng là quán Q… ĐẦU TIÊN gần chỗ ở; bắt đầu 08:00–11:00 bữa sáng tuỳ chọn; sau 11:00 không bữa sáng; sau 13:00 không ép bữa trưa. Giờ ăn: trưa khoảng 11:30–13:00 (dịch tối đa 1 tiếng), tối 18:00–20:00. Mỗi bữa 1 quán Q… chèn đúng chỗ trong `stops`, giữa 2 bữa là chỗ chơi (không xếp 2 quán liền nhau, 2 bữa cách nhau 3–4 tiếng); thiếu bữa bắt buộc là lỗi. `leave_stay` = giờ bắt đầu ngày (không sớm hơn).
-   Ngày kéo tới tối: lịch phải có chỗ chơi buổi sáng VÀ buổi chiều (sau bữa trưa / nghỉ trưa) rồi mới tới bữa tối — không kết thúc ngày sau bữa trưa. Không nhồi quá (khoảng 4–6 chỗ chơi một ngày dài).
+   Ngày kéo tới tối: lịch phải có chỗ chơi buổi sáng VÀ buổi chiều (sau bữa trưa / nghỉ trưa) rồi mới tới bữa tối — không kết thúc ngày sau bữa trưa. Không nhồi quá (khoảng 4–6 chỗ chơi một ngày dài). Spa, massage, xông hơi xếp buổi chiều / tối (từ 13:00), không đi sáng sớm trước bữa sáng.
 
 11. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày nên có mức tiền khác nhau quanh con số đó (một lịch thấp hơn, một lịch sát, một lịch cao hơn một chút), để hệ thống ghép được cả chuyến sát ngân sách user đưa. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
 

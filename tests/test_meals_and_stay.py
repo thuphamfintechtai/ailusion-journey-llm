@@ -345,7 +345,7 @@ def test_long_day_with_only_restaurants_gets_places_to_visit():
     from ailusion.itinerary.shared.models import STAY, Place
 
     def place(pid: str, kind: str = "visit", stay: int = 90) -> Place:
-        cat = "Nhà hàng" if kind == "meal" else "Bảo tàng"
+        cat = "Nhà hàng" if kind == "meal" else {"a": "Bảo tàng", "b": "Chùa", "c": "Chợ"}[pid]
         return Place(
             place_id=pid,
             name=pid,
@@ -375,8 +375,8 @@ def test_long_day_with_only_restaurants_gets_places_to_visit():
             [],
             [],
         )
-        == 0
-    )  # ngày ngắn: không bù
+        == 1
+    )  # ngày ngắn (về trưa): 1 chỗ chơi là đủ
 
 
 def test_two_meals_must_be_at_least_two_hours_apart():
@@ -409,3 +409,67 @@ def test_two_meals_must_be_at_least_two_hours_apart():
     assert skipped_meals("10:00", "22:00") == [
         "Bữa sáng tuỳ chọn: ngày bắt đầu 10:00, có thể ăn sáng muộn"
     ]
+
+
+def test_breakfast_comes_first_and_spa_waits_for_the_afternoon():
+    from ailusion.itinerary.coordinator.simulate import reorder_visits, simulate
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str, cat: str, stay: int) -> Place:
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=10.2,
+            lng=103.9,
+            stay_low=stay,
+            stay_high=stay,
+        )
+
+    # Lịch Phú Quốc thật: 08:10 spa -> 10:00 ăn sáng -> 12:00 ăn trưa -> bảo tàng -> ăn tối.
+    places = {
+        "spa": place("spa", "visit", "Spa mát xa", 90),
+        "b": place("b", "meal", "Quán ăn", 45),
+        "bien": place("bien", "visit", "Bãi biển", 90),
+        "l": place("l", "meal", "Nhà hàng", 45),
+        "m": place("m", "visit", "Bảo tàng", 90),
+        "cho": place("cho", "visit", "Chợ", 90),
+        "d": place("d", "meal", "Nhà hàng", 45),
+    }
+    ids = [*places, STAY]
+    mx = {(a, c): 10.0 for a in ids for c in ids if a != c}
+    w = DayWindow(day=2, day_start="08:00", day_end="22:45", free_minutes=800)
+    plan = DayPlan(
+        id="L", day=2, leave_stay="08:00", stops=["spa", "b", "bien", "l", "m", "cho", "d"]
+    )
+    issues = simulate(plan, places, mx, w, [], False).issues
+    assert any("bữa sáng phải là việc đầu tiên" in i for i in issues)
+    assert any("tới spa lúc" in i and "phải chờ" in i for i in issues)  # spa coi như mở từ 13:00
+    reorder_visits(plan, places, mx, w, [], [])
+    run = simulate(plan, places, mx, w, [], False)
+    assert places[plan.stops[0]].kind == "meal"  # ăn sáng trước
+    spa = next(s for s in run.stops if s.place_id == "spa")
+    assert spa.start >= 13 * 60  # spa dời sang chiều
+
+
+def test_a_cafe_named_spa_is_still_a_breakfast_place():
+    from ailusion.itinerary.coordinator.simulate import simulate
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    cafe = Place(
+        place_id="c",
+        name="The Garden Coffee, Food & Spa",
+        category="Quán cà phê",
+        kind="meal",
+        lat=10.2,
+        lng=103.9,
+        stay_low=45,
+        stay_high=45,
+    )
+    m = {("STAY", "c"): 10.0, ("c", STAY): 10.0, (STAY, "c"): 10.0}
+    w = DayWindow(day=4, day_start="08:00", day_end="12:30", free_minutes=270)
+    run = simulate(
+        DayPlan(id="L", day=4, leave_stay="08:00", stops=["c"]), {"c": cafe}, m, w, [], False
+    )
+    assert run.stops[0].start < 9 * 60  # không bị bắt chờ tới 13:00 như spa
