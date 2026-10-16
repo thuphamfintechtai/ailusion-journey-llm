@@ -67,6 +67,8 @@ def _respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "find_stays":
         return {
             **ok,
+            # Mặt bằng giá cả điểm đến (MCP tính trước khi cắt `limit`).
+            "price_stats_vnd": {"p25": 800_000, "median": 1_200_000, "p75": 2_500_000, "count": 40},
             "stays": [
                 {
                     "name": "Khách sạn Biển",
@@ -91,7 +93,8 @@ def _respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "find_places":
         text = f"{args.get('category', '')} {args.get('query', '')}".lower()
         if any(w in text for w in ("nhà hàng", "quán", "hải sản", "đặc sản", "ẩm thực", "chợ")):
-            return {**ok, "places": FOODS}
+            stats = {"p25": 100_000, "median": 150_000, "p75": 250_000, "count": 30}
+            return {**ok, "places": FOODS, "price_stats_vnd": stats}
         return {**ok, "places": VISITS}
     if name == "check_opening_hours":
         return {
@@ -317,6 +320,24 @@ async def _run(form: dict[str, Any], sent: list[str] | None = None) -> Any:
     sent = sent if sent is not None else [k for k, v in form.items() if v not in (None, [], "")]
     state = await graph.ainvoke({"form": form, "sent": sent}, {"configurable": {"thread_id": "t"}})
     return to_response(state, "plan-x", 1.0)
+
+
+async def test_budget_levels_reach_the_response(llm_calls: list[str]) -> None:
+    # Ngân sách thấp: cảnh báo ở đầu kết quả, kèm bảng 3 mức.
+    low = await _run(_form(budget=1_000_000))
+    assert low.budget_level and low.budget_level.kind == "low"
+    assert [lv.key for lv in low.budget_level.levels] == ["saving", "normal", "luxury"]
+    # Chỗ rẻ, ngân sách rất cao: báo dư, không lặp ghi chú "thấp hơn ngân sách" ở cuối (từng làm
+    # hỏng cả kết quả vì trùng tên biến).
+    rich = await _run(_form(budget=100_000_000))
+    assert rich.status == "ok" and rich.budget_level and rich.budget_level.kind == "surplus"
+    assert rich.budget_level.budget_text == "100 triệu cả đoàn cả chuyến"
+    assert not any("thấp hơn ngân sách" in n for n in rich.notes)
+    # Đơn vị "mỗi người mỗi ngày": dòng quy đổi ghi rõ phép tính.
+    per_day = await _run(_form(budget=10_000_000, budget_unit="person_day"))
+    assert per_day.budget_level and per_day.budget_level.budget_text == (
+        "10 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 60 triệu cả đoàn cả chuyến"
+    )
 
 
 async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None:

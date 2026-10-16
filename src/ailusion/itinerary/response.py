@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .coordinator.levels import budget_level
 from .coordinator.profile import QUESTIONS
+from .coordinator.rank import budget_note
 from .coordinator.simulate import simulate
 from .shared.context import Ctx
 from .shared.fares import cars_for, city_of, compare, is_night
@@ -328,6 +329,10 @@ class Level(BaseModel):
 class BudgetLevel(BaseModel):
     """Ngân sách so với mặt bằng giá của điểm đến, hiện ở đầu kết quả."""
 
+    kind: Literal["low", "below", "surplus", "unlimited"] = Field(
+        description="low: dưới cả mức tiết kiệm; below: dưới mức của mức chi đã chọn; surplus: "
+        "ngân sách dư (lịch tiêu dưới khoảng ngân sách, ngân sách trên cả mức sang); unlimited"
+    )
     severity: Literal["warn", "info"]
     title: str
     text: str
@@ -336,6 +341,11 @@ class BudgetLevel(BaseModel):
         None, description="Mức của điểm đến đem so với ngân sách; không giới hạn: None"
     )
     budget: int | None = None
+    budget_text: str | None = Field(
+        None,
+        description='Ngân sách quy về cả đoàn cả chuyến, VD "1 triệu mỗi người mỗi ngày × 2 '
+        'người × 3 ngày = 6 triệu cả đoàn cả chuyến"',
+    )
     levels: list[Level] = Field(default_factory=list)
     scope: str = ""
 
@@ -535,6 +545,11 @@ def to_response(state: dict[str, Any], thread_id: str, seconds: float) -> Itiner
         state["trip"]["options"][0] if state["trip"]["options"] else {},
     )
     level = budget_level(form, profile, chosen.get("estimate"))
+    if level and level["kind"] == "surplus":
+        # Khung "Ngân sách dư" ở đầu đã nói lịch tiêu thấp hơn ngân sách: bỏ ghi chú cùng ý ở cuối.
+        first = (state["trip"]["options"] or [{}])[0]
+        dup = budget_note(first.get("estimate"), form)
+        notes = [n for n in notes if n != dup]
     return ItineraryResponse(
         status="ok",
         stay=stay,
@@ -1169,13 +1184,33 @@ def request_text(form: TripForm) -> str:
         f"Lập lộ trình: {form.destination}, {form.num_days} ngày "
         f"({form.start_date:%d/%m}–{form.end_date:%d/%m}), {', '.join(party)}."
     ]
-    if form.budget:
-        unit = {
-            "group_trip": "cả đoàn cả chuyến",
-            "person_trip": "mỗi người cả chuyến",
-            "person_day": "mỗi người mỗi ngày",
-        }[form.budget_unit]
-        lines.append(f"Ngân sách {_money(form.budget)} {unit}.")
+    unit = {
+        "group_trip": "cả đoàn cả chuyến",
+        "person_trip": "mỗi người cả chuyến",
+        "person_day": "mỗi người mỗi ngày",
+    }[form.budget_unit]
+    if form.budget_min is not None and (form.budget_min or form.budget):
+        # Khoảng user chọn ở câu hỏi lại ("3–6 triệu", "trên 10 triệu"), không phải 1 con số.
+        low, high = form.budget_min, form.budget
+        span = (
+            _range(low, high)
+            if low and high
+            else (f"từ {_money(low)}" if low else f"tối đa {_money(high)}")
+        )
+        lines.append(f"Ngân sách {span} {unit}.")
+    elif form.budget:
+        # Đơn vị "mỗi người": ghi luôn số cả đoàn cả chuyến (bấm nhầm thì thấy ngay).
+        days = form.num_days if form.budget_unit == "person_day" else 1
+        whole = form.budget * form.group_size * days
+        lines.append(
+            f"Ngân sách {_money(form.budget)} {unit}"
+            + (
+                f" (= {_money(whole)} cả đoàn cả chuyến)"
+                if form.budget_unit != "group_trip"
+                else ""
+            )
+            + "."
+        )
     if form.purposes:
         lines.append("Mục đích: " + ", ".join(PURPOSE_NAMES[p] for p in form.purposes) + ".")
     if form.must_visits:

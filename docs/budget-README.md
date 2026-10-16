@@ -128,12 +128,12 @@ Phát sinh trên tab Chi phí: `EXTRA_PCT` 10–15%, ngày mưa / lễ +5% vào 
   - **Thấp hơn / vượt** khoảng → `budget_note`: nhập 1 số thì so với số đó, chọn khoảng thì so với mức dưới / mức trên.
   - `money_notes`:
     - "Khoảng X% tổng ước dựa trên giá ước" (phần tiền từ chỗ chưa có giá thật);
-    - thấp hơn mức dưới → gợi ý tối đa `UPGRADE_STAYS` = 2 chỗ ở giá cao hơn vừa tiền còn dư (sao tin được cao trước) và `UPGRADE_VISITS` = 3 chỗ chơi có phí (giá thật) chưa có trong lịch.
+    - thấp hơn mức dưới → gợi ý tối đa `UPGRADE_STAYS` = 2 chỗ ở giá cao hơn vừa tiền còn dư, trong `STAY_MAX_KM` từ trung tâm (sao tin được cao trước; chỗ bước chọn chỗ ở đã bỏ vì xa thì không gợi ý) và `UPGRADE_VISITS` = 3 chỗ chơi có phí (giá thật) chưa có trong lịch.
   - `unlimited` → bỏ qua mọi luật tiền.
 
 ## 9. Hiển thị (FE)
 
-- Đầu kết quả: khung mức chi (`budget_level`, mục 10) — đỏ khi ngân sách dưới cả mức Tiết kiệm (kèm nút sửa form), xanh khi dưới mức của mức chi đã chọn / mức chi không giới hạn; bảng 3 mức (cả chuyến, phòng / đêm, quán / người), cột đem so với ngân sách tô nền.
+- Đầu kết quả: khung mức chi (`budget_level`, mục 10) — đỏ khi ngân sách dưới cả mức Tiết kiệm, xanh khi dưới mức của mức chi đã chọn / ngân sách dư / mức chi không giới hạn (thiếu hoặc dư thì có nút sửa form); bảng 3 mức (cả chuyến, phòng / đêm, quán / người), cột đem so với ngân sách tô nền; dòng "Ngân sách của bạn" ghi phép quy đổi.
 - Thẻ phương án: "Ước tính cho N người: a–b triệu".
 - Tab **Chi phí** ([plan-cost.tsx](../../ailusion-journey-fe/src/components/itinerary/plan-cost.tsx)): chỗ ở / vé / ăn / đi lại / phát sinh, khoảng thấp – cao, ghi "ước" với giá ước.
 - Ghi chú ngân sách (lệch, giá ước, gợi ý nâng) hiện trong phần ghi chú của lộ trình.
@@ -170,12 +170,14 @@ Mỗi mức = (phòng × số **đêm** × số phòng (2 người 1 phòng) + 1
 
 Mỗi mức chi user chọn so ngân sách (`trip_budget`) với một mức riêng và có lời báo riêng:
 
-| Mức chi | Đem so với | Dưới cả Tiết kiệm (đỏ) | Dưới mức đem so (xanh) | Đủ |
+| Mức chi | Đem so với | Dưới cả Tiết kiệm (đỏ, `low`) | Dưới mức đem so (xanh, `below`) | Đủ |
 |---|---|---|---|---|
-| Bình thường | Thường gặp | "Ngân sách thấp so với …": mức tiết kiệm đã khoảng X, hơn ngân sách; lịch ưu tiên chỗ rẻ nhưng tổng vẫn có thể vượt; mức thường gặp khoảng Y | "Ngân sách dưới mức thường gặp ở …": đủ mức tiết kiệm nên lịch ưu tiên chỗ ở, quán rẻ hơn mức giữa | không báo |
-| Sang, không vượt ngân sách | Sang | như trên, kèm "chưa nói tới mức sang (khoảng Z)" | "Ngân sách chưa tới mức sang ở …": lịch chọn chỗ tốt nhất mà không vượt ngân sách | không báo |
+| Bình thường | Thường gặp | "Ngân sách thấp so với …": mức tiết kiệm đã khoảng X, hơn ngân sách; lịch ưu tiên chỗ rẻ nhưng tổng vẫn có thể vượt; mức thường gặp khoảng Y | "Ngân sách dưới mức thường gặp ở …": đủ mức tiết kiệm nên lịch ưu tiên chỗ ở, quán rẻ hơn mức giữa | không báo; dư thì xem dưới |
+| Sang, không vượt ngân sách | Sang | như trên, kèm "chưa nói tới mức sang (khoảng Z)" | "Ngân sách chưa tới mức sang ở …": lịch chọn chỗ tốt nhất mà không vượt ngân sách | không báo; dư thì xem dưới |
 | Không giới hạn | không so ngân sách | — | luôn báo (xanh): lịch chọn theo chất lượng, tổng ước của phương án đề xuất; cao hơn ngân sách thì nói | — |
 
+- **Ngân sách dư** (xanh, `surplus`, chỉ biết sau khi lập lịch): ngân sách trên cả mức Sang mà tổng ước của phương án đề xuất vẫn dưới khoảng ngân sách → "Ngân sách dư so với …: lịch ước khoảng E, thấp hơn ngân sách khoảng P%: cả mức sang … cũng chỉ khoảng L, nên khó tiêu hết ngân sách", kèm nút sửa form; ghi chú cùng ý ở cuối kết quả (`budget_note`) thì bỏ. Ngân sách chưa tới mức Sang mà lịch tiêu ít thì không báo dư (lý do là lịch, không phải điểm đến rẻ).
+- **Phép quy đổi ngân sách** (`budget_text`, theo đúng `_to_trip`): khung báo ghi "1 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 6 triệu cả đoàn cả chuyến" (vé đã mua: "10 triệu − vé đã mua 1,5 triệu × 2 người = 7 triệu"; khoảng: "3–6 triệu cả đoàn cả chuyến, so với giữa khoảng 4,5 triệu"). Đơn vị "mỗi người" / có vé đã mua thì bước phân nhóm ghi ngay vào nhật ký; bong bóng yêu cầu ghi "(= … cả đoàn cả chuyến)" và đúng khoảng ngân sách user chọn. Bấm nhầm "mỗi người mỗi ngày" (6 triệu thành 36 triệu) là thấy ngay.
 - Chỉ để báo user, không dùng để lọc / chọn chỗ (chọn chỗ vẫn theo mục 4–7).
 - Ngân sách dưới mức đem so mà có quán / vé đắt hơn phần tiền mỗi ngày (`costly_ids`) thì bước chốt danh sách ghi thêm "đã ưu tiên quán dưới … mỗi người mỗi bữa và chỗ chơi vé dưới … mỗi người".
 - MCP chưa trả `price_stats_vnd` cho quán (bản cũ) thì không báo: không đoán từ vài quán phổ biến nhất.
@@ -188,7 +190,8 @@ Mỗi mức chi user chọn so ngân sách (`trip_budget`) với một mức ri�
 | Chỗ đắt, ngân sách thấp: Phú Quốc 2 người 3N2Đ 4 triệu | đỏ: tiết kiệm ~4,4 triệu (phòng + ăn tiết kiệm 3,9 triệu + phát sinh) |
 | Chỗ đắt, ngân sách vừa / cao: Phú Quốc 8 / 20 triệu | không báo |
 | Chỗ rẻ, ngân sách thấp: Huế 2 người 3N2Đ 2 triệu | đỏ |
-| Chỗ rẻ, ngân sách rất cao: Huế 30 triệu (Bình thường / Sang) | không báo thiếu; lịch tiêu thấp hơn ngân sách thì ghi chú cuối kết quả + gợi ý nâng chỗ ở, hoạt động có phí (mục 8) |
+| Chỗ rẻ, ngân sách rất cao: Huế 30 triệu (Bình thường / Sang) | xanh "Ngân sách dư so với Huế" (chạy thật: lịch ước 11,9 triệu, thấp hơn ~60%; mức sang ~6,8 triệu; chỗ ở Azerai 3,4 triệu / đêm, đắt nhất trong 30 km) + gợi ý nâng chỗ ở, hoạt động có phí (mục 8) |
+| Bấm nhầm đơn vị: 6 triệu "mỗi người mỗi ngày" (Đà Nẵng 2 người 3 ngày) | nhật ký + bong bóng ghi 36 triệu cả đoàn; xanh "Ngân sách dư" kèm phép quy đổi |
 | Đơn vị: 6 triệu cả đoàn = 3 triệu mỗi người cả chuyến = 1 triệu mỗi người mỗi ngày (2 người 3 ngày) | cùng mốc 6 triệu, cùng lời báo |
 | Đông người, ngân sách không cao: Đà Nẵng 8 người 3N2Đ 10 triệu (4 phòng) | đỏ |
 | Gia đình 2 lớn + 2 trẻ: Nha Trang 8 triệu | đỏ (2 phòng, 4 suất ăn) |

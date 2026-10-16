@@ -10,8 +10,11 @@ từng ra "tối thiểu 25 triệu").
   chắc thiếu, không báo nhầm.
 - Tiết kiệm = trung vị nửa rẻ (p25), Thường gặp = trung vị, Sang = trung vị nửa đắt (p75).
 - Mức chi "Bình thường" so ngân sách với Thường gặp, "Sang, không vượt ngân sách" với Sang; dưới cả
-  Tiết kiệm thì cảnh báo. "Không giới hạn" không so ngân sách: ghi tổng ước của lịch, kèm các mức
-  của điểm đến để tham khảo.
+  Tiết kiệm thì cảnh báo. Ngân sách trên cả mức Sang mà tổng ước của lịch vẫn dưới khoảng ngân sách
+  thì báo ngân sách dư (chỗ rẻ, ngân sách cao: Huế 30 triệu, phòng đắt nhất trong 30 km 3,4 triệu).
+  "Không giới hạn" không so ngân sách: ghi tổng ước của lịch, kèm các mức của điểm đến để tham khảo.
+- Lời báo ghi ngân sách quy về cả đoàn cả chuyến kèm phép tính (`budget_text`): bấm nhầm "mỗi người
+  mỗi ngày" thì 6 triệu thành 36 triệu, user thấy ngay.
 
 Chỉ để báo user (đầu kết quả, nhật ký bước 3), không dùng để lọc hay chọn chỗ.
 """
@@ -20,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..shared.form import EXTRA_MID, TripForm, money, required_meals
+from ..shared.form import EXTRA_MID, TripForm, budget_band, money, required_meals, trip_budget
 from ..shared.models import TripProfile
 
 # (mã, tên hiện cho user, phân vị trong `price_stats_vnd`, cách tính)
@@ -78,18 +81,63 @@ def about(v: float) -> str:
 
 
 def short(v: float) -> str:
-    """Giá 1 đêm / 1 bữa trong lời báo: 1.401.065 -> "1,4 triệu", 162.500 -> "163 nghìn"."""
+    """Số tiền gọn trong lời báo: 1.401.065 -> "1,4 triệu", 6.000.000 -> "6 triệu", 162.500 ->
+    "163 nghìn"."""
     if v >= 1_000_000:
-        return f"{v / 1_000_000:.1f}".replace(".", ",") + " triệu"
+        return f"{v / 1_000_000:.1f}".rstrip("0").rstrip(".").replace(".", ",") + " triệu"
     return f"{int(v / 1000 + 0.5)} nghìn"
+
+
+def budget_text(form: TripForm) -> str | None:
+    """Ngân sách user nhập quy về cả đoàn cả chuyến, kèm phép tính theo đơn vị đã chọn (đúng
+    `shared/form._to_trip`): "1 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 6 triệu cả đoàn cả
+    chuyến". Không có ngân sách thì None."""
+    band = budget_band(form)
+    total = trip_budget(form)
+    if band is None or not total:
+        return None
+    whole = "cả đoàn cả chuyến"
+    if form.budget_min is not None:  # khoảng user chọn ở câu hỏi lại
+        low, high = band
+        if low and high:
+            # "3–6 triệu", không phải "3 triệu–6 triệu".
+            first = short(low).removesuffix(" triệu") if low >= 1_000_000 else short(low)
+            return f"{first}–{short(high)} {whole}, so với giữa khoảng {short(total)}"
+        return f"từ {short(low)} {whole}" if low else f"tối đa {short(total)} {whole}"
+    n, d, b, paid = form.group_size, form.num_days, form.budget or 0, form.prepaid_tickets
+    if form.budget_unit == "person_day":
+        how = f"{short(b)} mỗi người mỗi ngày × {n} người × {d} ngày"
+    elif form.budget_unit == "person_trip":
+        how = (
+            f"({short(b)} − vé đã mua {short(paid)}) × {n} người"
+            if paid
+            else f"{short(b)} mỗi người × {n} người"
+        )
+    else:
+        how = f"{short(b)} − vé đã mua {short(paid)} × {n} người" if paid else ""
+    return f"{how} = {short(total)} {whole}" if how else f"{short(total)} {whole}"
+
+
+def under_budget_pct(form: TripForm, budget: int, estimate: int | None) -> int | None:
+    """Tổng ước (bỏ vé đã mua) dưới mức dưới của khoảng ngân sách: thấp hơn ngân sách mốc bao
+    nhiêu %; không thì None."""
+    band = budget_band(form)
+    if estimate is None or band is None or not band[0]:
+        return None
+    net = estimate - form.prepaid_tickets * form.group_size
+    return round((budget - net) / budget * 100) if net < band[0] else None
 
 
 def budget_level(
     form: TripForm, profile: TripProfile, estimate: int | None = None
 ) -> dict[str, Any] | None:
-    """Thông báo mức chi cho đầu kết quả: `severity` "warn" (ngân sách dưới cả mức Tiết kiệm) hoặc
-    "info" (dưới mức của mức chi đã chọn; "không giới hạn" thì ghi tổng ước `estimate`), kèm cả 3
-    mức để hiện thành bảng. Ngân sách đủ mức đã chọn / chưa có mặt bằng giá thì None."""
+    """Thông báo mức chi cho đầu kết quả, `kind`:
+    - "low" (`severity` "warn"): ngân sách dưới cả mức Tiết kiệm;
+    - "below" ("info"): dưới mức của mức chi đã chọn;
+    - "surplus" ("info"): ngân sách trên cả mức Sang mà tổng ước `estimate` của lịch vẫn dưới
+      khoảng ngân sách (chỉ biết sau khi lập lịch);
+    - "unlimited" ("info"): mức chi không giới hạn, ghi tổng ước `estimate`.
+    Kèm cả 3 mức để hiện thành bảng. Ngân sách vừa / chưa có mặt bằng giá thì None."""
     rows = level_costs(form, profile)
     if not rows:
         return None
@@ -99,6 +147,7 @@ def budget_level(
     base = {
         "style": form.spend_style,
         "budget": budget,
+        "budget_text": budget_text(form),
         "levels": [{**r, "total": up(r["total"])} for r in rows],
         "scope": (
             f"Phòng + ăn + phát sinh {f'{EXTRA_MID * 100:g}'.replace('.', ',')}% cho "
@@ -118,6 +167,7 @@ def budget_level(
             text += f" Cao hơn ngân sách {money(budget)}."
         return {
             **base,
+            "kind": "unlimited",
             "severity": "info",
             "target": None,
             "title": "Mức chi không giới hạn",
@@ -127,10 +177,10 @@ def budget_level(
     target_key = STYLE_LEVEL.get(form.spend_style)
     if not budget or target_key is None:
         return None
-    saving, target = by["saving"], by[target_key]
+    saving, target, top = by["saving"], by[target_key], by["luxury"]
     luxury = target_key == "luxury"
     if budget < saving["total"]:
-        severity, title = "warn", f"Ngân sách thấp so với {dest}"
+        kind, severity, title = "low", "warn", f"Ngân sách thấp so với {dest}"
         text = (
             f"Chỉ phòng, ăn và phát sinh ở mức tiết kiệm đã khoảng {about(saving['total'])}, hơn "
             f"ngân sách {money(budget)}"
@@ -144,7 +194,7 @@ def budget_level(
         )
         shown = saving
     elif budget < target["total"]:
-        severity = "info"
+        kind, severity = "below", "info"
         title = (
             f"Ngân sách chưa tới mức sang ở {dest}"
             if luxury
@@ -159,10 +209,20 @@ def budget_level(
             f"{money(budget)} đủ mức tiết kiệm nên lịch ưu tiên chỗ ở, quán rẻ hơn mức giữa."
         )
         shown = target
+    elif budget > top["total"] and (pct := under_budget_pct(form, budget, estimate)):
+        kind, severity, title = "surplus", "info", f"Ngân sách dư so với {dest}"
+        text = (
+            f"Lịch ước khoảng {money(estimate)} cho cả đoàn, thấp hơn ngân sách {money(budget)} "
+            f"khoảng {pct}%: cả mức sang ở {dest} (phòng {short(top['stay_night'])}/đêm, quán "
+            f"{short(top['meal'])}/người) cũng chỉ khoảng {about(top['total'])}, nên khó tiêu hết "
+            "ngân sách. Có thể giảm ngân sách hoặc đi thêm ngày."
+        )
+        target_key, shown = "luxury", top
     else:
         return None
     return {
         **base,
+        "kind": kind,
         "severity": severity,
         "target": target_key,
         "title": title,
@@ -170,10 +230,13 @@ def budget_level(
         "log": (
             f"{title}: mức {shown['label'].lower()} khoảng {about(shown['total'])} (phòng + ăn + "
             f"phát sinh), ngân sách {money(budget)}"
+            if kind != "surplus"
+            else None
         ),
     }
 
 
 def below_level(form: TripForm, profile: TripProfile) -> bool:
     """Ngân sách thấp hơn mức của mức chi đã chọn (bước chốt danh sách ghi rõ đã ưu tiên chỗ rẻ)."""
-    return budget_level(form, profile) is not None and form.spend_style != "unlimited"
+    level = budget_level(form, profile)
+    return level is not None and level["kind"] in ("low", "below")
