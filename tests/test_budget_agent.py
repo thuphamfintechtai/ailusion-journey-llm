@@ -7,6 +7,7 @@ from ailusion.itinerary.agents.budget import (
     PriceFind,
     accept_price,
     hit_text,
+    name_on_page,
     price_windows,
     trusted_finds,
 )
@@ -151,3 +152,10 @@ def test_quote_joined_with_ellipsis_checks_each_part() -> None:
     assert accept_price(ok, page)
     bad = ok.model_copy(update={"quote": "Ticket price: Free [...] Bảo tàng khác"})
     assert not accept_price(bad, page)
+
+
+def test_destination_name_alone_is_never_found_on_a_page() -> None:
+    """Chỗ tên "Phú Quốc" (chính điểm đến): trang vé máy bay cũng nhắc "Phú Quốc" — không nhận."""
+    page = "Vé máy bay Hà Nội đi Phú Quốc chỉ từ 1.268.181 VND"
+    assert not name_on_page("Phú Quốc", "Phú Quốc", page)
+    assert name_on_page("Làng chài Hàm Ninh", "Phú Quốc", "Làng chài Hàm Ninh miễn phí")

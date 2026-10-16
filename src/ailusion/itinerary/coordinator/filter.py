@@ -90,6 +90,16 @@ GENERIC_NAME_WORDS = {
 SAME_PLACE_KM = 1.5
 
 
+def same_words(a: str, b: str) -> bool:
+    """Hai tên trùng hẳn khi bỏ dấu, chữ hoa, dấu câu ("Phú Quốc" / "phu quoc")."""
+
+    def plain(t: str) -> str:
+        t = unicodedata.normalize("NFD", t.lower().replace("đ", "d"))
+        return " ".join(re.findall(r"\w+", t.encode("ascii", "ignore").decode()))
+
+    return bool(plain(a)) and plain(a) == plain(b)
+
+
 def name_words(p: Place) -> set[str]:
     name = unicodedata.normalize("NFC", p.name).lower()
     return {w for w in re.findall(r"\w+", name) if w not in GENERIC_NAME_WORDS}
@@ -207,6 +217,10 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
             reason = "cảnh báo thiên tai mức đỏ, chỗ ngoài trời"
         elif is_shop(p) and "shopping" not in profile.purposes:
             reason = "cửa hàng, chuyến đi không có mục đích mua sắm"
+        elif p.kind == "visit" and same_words(p.name, form.destination):
+            # "Phú Quốc" (loại Đảo) là chính điểm đến, không phải một chỗ để ghé; Agent Budget
+            # từng gán cho nó giá vé máy bay Hà Nội – Phú Quốc 1.268.181 đ.
+            reason = "chính là điểm đến, không phải một chỗ để ghé"
         elif center and km(center, (p.lat, p.lng)) > MAX_KM_FROM_CENTER:
             reason = f"cách trung tâm {form.destination} hơn {MAX_KM_FROM_CENTER} km"
         if reason and p.must and not reason.startswith("đóng cửa"):

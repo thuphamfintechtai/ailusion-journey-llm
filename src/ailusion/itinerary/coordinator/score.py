@@ -16,7 +16,7 @@ from itertools import combinations
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import NEAR_MIN, required_meals, to_minutes
+from ..shared.form import NEAR_MIN, day_allowance, money, required_meals, to_minutes
 from ..shared.math import km, median, pareto_tiers
 from ..shared.models import (
     STAY,
@@ -33,6 +33,7 @@ from ..shared.models import (
     stays_of,
 )
 from ..shared.tools import tool_ok
+from .levels import below_level
 
 
 class NoPlacesError(Exception):
@@ -259,8 +260,11 @@ def pick_pool(
     center: Any,
     per_group: int,
     used: set[str] | None = None,
+    costly: set[str] | None = None,
 ) -> tuple[list[Place], list[list[str]]]:
     """Lấy hết tầng 1, rồi tầng 2… cho tới khi đủ số chỗ cả chuyến cần. Quán ăn chọn cùng cách.
+    `costly`: chỗ đắt hơn phần tiền của nó (`costly_ids`) — xếp sau mọi tầng của chỗ vừa túi tiền,
+    chỉ lấy khi thiếu.
 
     Chỗ chơi cùng một loại (`Place.group`: spa, chùa…) lấy tối đa `type_cap` chỗ (`per_group` =
     số ngày; spa thưa hơn): không thì "nghỉ dưỡng" kéo toàn spa vào, ngày nào cũng spa.
@@ -268,17 +272,24 @@ def pick_pool(
     tầng chung thì chỗ nổi tiếng nhất (Chùa Cầu) luôn ở tầng 1, phương án nào cũng có, ngày 1 của
     3 phương án giống hệt nhau.
     """
-    used = used or set()
+    used, costly = used or set(), costly or set()
     chosen: list[Place] = []
     tiers_out: list[list[str]] = []
-    own = [p for p in visits if p.place_id not in used]
-    others = [p for p in visits if p.place_id in used]
-    for items, need, cap in ((own, need_visits, per_group), (meals, need_meals, None)):
+    own = [p for p in visits if p.place_id not in used and p.place_id not in costly]
+    others = [p for p in visits if p.place_id in used and p.place_id not in costly]
+    dear = [p for p in visits if p.place_id in costly]
+    cheap_meals = [m for m in meals if m.place_id not in costly]
+    dear_meals = [m for m in meals if m.place_id in costly]
+    for items, need, cap in ((own, need_visits, per_group), (cheap_meals, need_meals, None)):
         taken = 0
         per: dict[str, int] = {}
         tiers = pareto_tiers(items, place_vector(center))
         if items is own:  # phần của phương án khác xếp sau mọi tầng của phương án này
             tiers += pareto_tiers(others, place_vector(center))
+        # Chỗ đắt hơn túi tiền xếp sau cùng, rẻ nhất trước (không theo sao: ngân sách 5 triệu
+        # Phú Quốc từng lấy Vua Hải Sản 1 triệu/người trước quán 250k).
+        over = dear if items is own else dear_meals
+        tiers += [[p] for p in sorted(over, key=lambda p: p.price or 0)]
         for tier in tiers:
             if taken >= need:
                 break
@@ -292,6 +303,28 @@ def pick_pool(
             taken += len(kept)
             tiers_out.append([p.place_id for p in kept])
     return chosen, tiers_out
+
+
+def costly_ids(
+    places: list[Place], allowance: int | None, group_size: int
+) -> tuple[set[str], int | None, int | None]:
+    """Chỗ đắt hơn phần tiền của nó, theo tiền nên tiêu mỗi ngày (`day_allowance`, đúng số
+    Planner nhận): quán có giá mỗi người hơn 1/3 tiền mỗi người mỗi ngày (3 bữa), chỗ chơi có vé
+    mỗi người hơn cả tiền một ngày của một người. Chỗ user chọn / thứ user nhắc không tính.
+    -> (place_id, trần một bữa, trần một vé). Không có ngân sách thì không chỗ nào."""
+    if not allowance:
+        return set(), None, None
+    per_person = allowance / max(1, group_size)
+    meal_cap, visit_cap = int(per_person / MEALS_PER_DAY), int(per_person)
+    out = {
+        p.place_id
+        for p in places
+        if not p.must
+        and not p.wanted
+        and p.price is not None
+        and p.price > (meal_cap if p.kind == "meal" else visit_cap)
+    }
+    return out, meal_cap, visit_cap
 
 
 def one_per_brand(meals: list[Place], center: tuple[float, float] | None = None) -> list[Place]:
@@ -750,6 +783,15 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     want_visits = min(
         len(ordered_visits), visit_need(profile.days, ordered_visits[:room], form.travel_mode)
     )
+    # Ngân sách thấp (5 triệu cho 2 người 4 ngày Phú Quốc): quán, vé đắt hơn phần tiền của nó xếp
+    # sau, chỉ dùng khi thiếu — không thì toàn quán 250k/người, công viên nước 700k/người.
+    costly, meal_cap, visit_cap = costly_ids(
+        visits + meals,
+        day_allowance(form, profile.trip_budget, stay.price if stay else None),
+        form.group_size,
+    )
+    ordered_visits = sorted(ordered_visits, key=lambda p: p.place_id in costly)
+    ordered_meals = sorted(ordered_meals, key=lambda p: p.place_id in costly)
     n_meals = meal_points(want_visits, want_meals, room)
     shortlist = ordered_visits[: room - n_meals]
     shortlist += ordered_meals[:n_meals]
@@ -768,6 +810,12 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     # Cặp tool không trả (lỗi, quá giới hạn, không có đường): ước theo đường chim bay thay vì để
     # trống — phút đi trống bị tính là 0, lịch thiếu dữ liệu lại thành lịch "ít ngồi xe nhất".
     notes = list(state.get("notes") or [])
+    if costly and below_level(form, profile):
+        notes.append(
+            f"Ngân sách thấp so với {form.destination}: đã ưu tiên quán dưới "
+            f"{money(meal_cap)} mỗi người mỗi bữa và chỗ chơi vé dưới {money(visit_cap)} mỗi "
+            "người; quán, vé đắt hơn chỉ dùng khi không đủ chỗ rẻ hơn."
+        )
     by_id = dict(zip(ids, points, strict=True))
     guessed = 0
     for a in ids:
@@ -799,6 +847,7 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         center,
         per_group=len(profile.days),
         used=used,
+        costly=costly,
     )
     pool = kept + pool
     # Đặt mã theo độ nổi tiếng (số review giảm dần): Planner hay chọn các mã đầu danh sách, nên

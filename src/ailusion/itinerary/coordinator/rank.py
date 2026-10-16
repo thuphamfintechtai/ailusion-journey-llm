@@ -426,22 +426,14 @@ UPGRADE_VISITS = 3  # và ngần này chỗ chơi có phí chưa có trong lịc
 def money_notes(
     state: dict[str, Any], best: dict[str, Any] | None, form: TripForm, profile: TripProfile
 ) -> list[str]:
-    """Ghi chú tiền ngoài lệch ngân sách:
-    - ngân sách thấp hơn mức chi tối thiểu thường gặp ở điểm đến (`base_daily_cost`: phòng phổ
-      biến ÷ 2 + 3 bữa phổ biến, theo dữ liệu điểm đến);
+    """Ghi chú tiền ngoài lệch ngân sách (ngân sách thấp so với mặt bằng giá của điểm đến: thông
+    báo riêng ở đầu kết quả, coordinator/levels.py):
     - bao nhiêu phần tổng ước là giá ƯỚC (chưa có giá thật) — điểm đến ít giá thật thì tổng ước
       chủ yếu là số tự đặt;
     - lịch tiêu thấp hơn mức dưới ngân sách: gợi ý cụ thể chỗ ở tốt hơn (vừa phần tiền còn dư) và
       chỗ chơi có phí chưa có trong lịch, thay vì chỉ nói "chưa đủ chỗ"."""
     out: list[str] = []
-    n, d = form.group_size, form.num_days
-    ref = trip_budget(form)
-    if ref and profile.base_daily_cost and profile.base_daily_cost * n * d > ref:
-        out.append(
-            f"Ngân sách thấp hơn mức chi tối thiểu thường gặp ở {form.destination} "
-            f"(khoảng {money(profile.base_daily_cost * n * d)} cho {n} người {d} ngày: phòng phổ "
-            "biến + 3 bữa mỗi ngày, chưa gồm vé và đi lại)."
-        )
+    n = form.group_size
     if best is None or best.get("estimate") is None:
         return out
     places = places_of(state)

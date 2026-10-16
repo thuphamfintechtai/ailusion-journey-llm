@@ -305,7 +305,9 @@ class TripProfile(BaseModel):
     sort_order: list[tuple[str, str]]
     daily_budget: int | None
     trip_budget: int | None
-    base_daily_cost: int | None
+    # Mặt bằng giá của cả điểm đến: {"stay": {p25, median, p75, count} giá phòng / đêm, "meal": …
+    # giá quán / người} (coordinator/levels.py); MCP chưa trả thì None.
+    price_levels: dict[str, dict[str, int]] | None = None
     questions: list[str] = Field(default_factory=list)
     guess: list[str] = Field(default_factory=list)
 

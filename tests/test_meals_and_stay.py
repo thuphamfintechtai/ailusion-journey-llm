@@ -44,7 +44,7 @@ def test_every_night_needs_a_place_to_sleep() -> None:
             "group_size": 2,
         }
     )
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     night = DayPlan(id="N1", day=1, leave_stay="11:00", stops=[])
     check_plan(night, {}, {}, profile.days[0], profile, form, has_stay=False)
     assert night.status == "fail" and any("chỗ ngủ" in i for i in night.issues)
@@ -187,7 +187,7 @@ def test_nap_can_be_at_a_nearby_cafe_or_hotel_or_skipped():
         wake_time="06:00",
         nap="none",
     )
-    assert not any(d.nap for d in profile_trip(form, [], []).days)
+    assert not any(d.nap for d in profile_trip(form).days)
 
 
 def test_overfull_short_day_drops_a_visit_but_keeps_user_picks():

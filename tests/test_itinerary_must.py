@@ -155,7 +155,7 @@ def test_every_plan_of_the_day_must_include_the_chosen_place() -> None:
 
 def test_chosen_time_waits_when_early_and_flags_when_late() -> None:
     form = _form(must_visits=[{"name": "x"}])
-    window = profile_trip(form, [], []).days[1]
+    window = profile_trip(form).days[1]
     places = {
         "a": _place("a", stay_low=60, stay_high=60, hours={2: (480, 1320)}),
         "cho": _place(
@@ -174,7 +174,7 @@ def test_chosen_time_waits_when_early_and_flags_when_late() -> None:
 
 def test_plan_without_the_chosen_place_fails() -> None:
     form = _form()
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     places = {"a": _place("a", stay_low=60, stay_high=60), "cho": _place("cho", must=True)}
     plan = DayPlan(id="L1", day=1, leave_stay="12:00", stops=["a"])
     reason = check_plan(plan, places, {}, profile.days[0], profile, form, ["cho"])
@@ -220,7 +220,7 @@ def test_evening_return_is_asked_and_defaults_to_20h() -> None:
     from ailusion.itinerary.coordinator.profile import QUESTIONS
 
     form = _form(must_visits=[{"name": "Cầu Rồng", "day": 1, "time": "21:00"}])
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     # Không nhập giờ về tối: bước 4 hỏi (H6); chưa trả lời thì tạm về lúc 20:00.
     assert "H6" in profile.questions
     assert profile.days[1].day_end == "20:45"  # đi chơi tới 20:00 + 45 phút đường về
@@ -228,16 +228,16 @@ def test_evening_return_is_asked_and_defaults_to_20h() -> None:
     assert profile.days[0].day_end == "22:30"
     unsure = dict(QUESTIONS["H6"]["choices"])["Chưa biết (để 20h)"]
     assert unsure == {"night_return_time": "20:45"}
-    late = profile_trip(_form(night_out=True), [], [])
+    late = profile_trip(_form(night_out=True))
     assert "H6" not in late.questions and late.days[0].day_end == "23:30"
     own = _form(night_return_time="21:00", must_visits=[{"name": "x", "day": 1, "time": "21:00"}])
-    assert profile_trip(own, [], []).days[0].day_end == "21:00"  # user tự đặt giờ về: giữ
+    assert profile_trip(own).days[0].day_end == "21:00"  # user tự đặt giờ về: giữ
 
 
 def test_free_time_before_a_fixed_time_is_not_an_error_and_dinner_waits() -> None:
     form = _form(must_visits=[{"name": "Cầu Rồng", "day": 1, "time": "21:00"}])
     # Ngày bắt đầu 15:00: chỉ cần bữa tối (đã có quán q).
-    window = profile_trip(form, [], []).days[0].model_copy(update={"day_start": "15:00"})
+    window = profile_trip(form).days[0].model_copy(update={"day_start": "15:00"})
     places = {
         "a": _place("a", stay_low=60, stay_high=60, hours={1: (480, 1320)}),
         "q": _place("q", kind="meal", category="Nhà hàng", stay_low=60, stay_high=60),
@@ -282,22 +282,22 @@ def test_every_group_choice_is_accepted_without_asking_again() -> None:
     # Ô "Đi cùng ai" trên form (5 lựa chọn): chọn rồi thì không hỏi lại H1, kể cả "Gia đình" để
     # trống số trẻ em / người lớn tuổi.
     for group in ("solo", "couple", "friends", "colleagues", "family"):
-        p = profile_trip(_form(group_type=group, **base), [], [])
+        p = profile_trip(_form(group_type=group, **base))
         assert "H1" not in p.questions, group
     # Câu hỏi lại H1: mọi lựa chọn đều trả lời xong câu hỏi, có lựa chọn gia đình toàn người lớn.
     choices = dict(QUESTIONS["H1"]["choices"])
     assert choices["Gia đình (người lớn)"] == {"group_type": "family"}
     for label, answer in choices.items():
-        p = profile_trip(_form(**{"group_type": None, **base, **answer}), [], [])
+        p = profile_trip(_form(**{"group_type": None, **base, **answer}))
         assert "H1" not in p.questions, label
-    assert "H1" in profile_trip(_form(group_type=None, **base), [], []).questions
+    assert "H1" in profile_trip(_form(group_type=None, **base)).questions
 
 
 def test_fixed_time_later_does_not_push_breakfast_to_dinner() -> None:
     """Chỗ hẹn 16:30 cuối ngày: quán sáng 08:05 ăn luôn (từng bị chờ tới 18:00, 595 phút), quán
     trưa chờ tới mốc trưa, quán tối sau chỗ hẹn chờ tới 18:00."""
     form = _form()
-    window = profile_trip(form, [], []).days[1]  # ngày 2: 08:00–20:45
+    window = profile_trip(form).days[1]  # ngày 2: 08:00–20:45
     places = {
         "b": _place("b", kind="meal", category="Nhà hàng", stay_low=45, stay_high=45),
         "a": _place("a", stay_low=60, stay_high=60),
@@ -320,7 +320,7 @@ def test_code_adds_the_chosen_place_the_planner_left_out() -> None:
     from ailusion.itinerary.coordinator.simulate import add_missing_musts
 
     form = _form()
-    window = profile_trip(form, [], []).days[1]
+    window = profile_trip(form).days[1]
     places = {
         "a": _place("a", stay_low=60, stay_high=60),
         "cho": _place("cho", stay_low=60, stay_high=60, must=True, must_day=2),

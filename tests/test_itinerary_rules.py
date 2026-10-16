@@ -111,7 +111,7 @@ def test_parse_clock(text: str, expected: str | None) -> None:
 
 
 def test_family_example_is_p2_with_free_minutes_840_435_270() -> None:
-    profile = profile_trip(family_form(), stay_prices=[800_000], meal_prices=[100_000])
+    profile = profile_trip(family_form())
     assert profile.needs_care is True
     assert profile.nice_to_have_needs[:3] == ["kids", "high_chair", "baby_changing"]
     # Giờ về tối theo user (23:30); không có bé thì cũng không tự đặt luật về sớm.
@@ -129,22 +129,22 @@ def test_family_example_is_p2_with_free_minutes_840_435_270() -> None:
 
 def test_group_rules_in_order() -> None:
     # B0: user chọn ưu tiên thì theo user.
-    assert profile_trip(family_form(priority="saving"), [], []).group == "P1"
+    assert profile_trip(family_form(priority="saving")).group == "P1"
     couple = {"group_type": "couple", "kids_under_6": 0, "seniors_65": 0, "busy_slots": []}
     # Không còn B3: ngân sách thấp không tự thành "tiết kiệm" (bước ghép bám ±5% ngân sách).
-    low = profile_trip(family_form(**couple, budget=3_000_000), [800_000], [100_000])
+    low = profile_trip(family_form(**couple, budget=3_000_000))
     assert (low.group, low.rule) == ("P3", "B4")
     # B4: còn lại.
-    rich = profile_trip(family_form(**couple, budget=60_000_000), [800_000], [100_000])
+    rich = profile_trip(family_form(**couple, budget=60_000_000))
     assert (rich.group, rich.rule) == ("P3", "B4")
     # B1: chuyến 1 ngày mà mục đích chính không phải nghỉ dưỡng.
     short = family_form(**couple, end_date="2026-10-25", purposes=["food"], departure_time="20:00")
-    assert profile_trip(short, [], []).group == "P4"
+    assert profile_trip(short).group == "P4"
 
 
 def test_questions_at_most_three_in_order() -> None:
     form = family_form(group_type=None, budget=None, purposes=[], interests="")
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     assert questions_for(form, profile) == ["H1", "H3", "H2"]
 
 
@@ -158,7 +158,7 @@ def test_rating_floor_matches_the_worked_examples() -> None:
 
 
 def test_capacity_example_is_10_5_3() -> None:
-    days = profile_trip(family_form(), [], []).days
+    days = profile_trip(family_form()).days
     assert capacity(days, typical_stay=60, typical_hop=20) == [10, 5, 3]  # ngày 1, 2 nghỉ trưa
 
 
@@ -191,7 +191,7 @@ def test_simulate_long_stay_hits_meal_only_slot() -> None:
         "cho": _place("cho", stay_low=60, stay_high=90, hours={2: (8 * 60, 20 * 60)}),
     }
     matrix = {(STAY, "vui"): 25, ("vui", "cho"): 20, ("cho", STAY): 20}
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     # Ngày bắt đầu 10:00: không bắt bữa sáng; khu vui chơi trùm giờ trưa; tối dự tiệc từ 16:45.
     window = profile.days[1].model_copy(update={"day_start": "10:00"})
     plan = DayPlan(id="L3", day=2, leave_stay="10:00", stops=["vui", "cho"])
@@ -338,7 +338,7 @@ def test_options_do_not_revisit_a_place_on_a_later_day() -> None:
         2: [plan("N2-L1", 2, ["a", "q3"]), plan("N2-L2", 2, ["c", "q4"])],
     }
     form = family_form()
-    trip = assemble(ranked, None, form, profile_trip(form, [], []))
+    trip = assemble(ranked, None, form, profile_trip(form))
     assert [p.id for p in trip["options"][0]["days"]] == ["N1-L1", "N2-L2"]
 
 
@@ -366,7 +366,7 @@ def test_plan_label_only_carries_its_own_errors() -> None:
 
 
 def test_check_plan_keeps_earlier_labels() -> None:
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     places = {"vui": _place("vui", stay_low=60, stay_high=90)}
     plan = DayPlan(id="L1", day=2, leave_stay="10:00", stops=["vui"])
     plan.unchecked.append("Planner chưa sửa hết lỗi: x")
@@ -425,7 +425,7 @@ def test_lunch_break_is_read_and_respected() -> None:
     p = pool["bt"]
     assert p.hours[2] == (450, 1020) and p.breaks[2] == [(660, 810)]
     assert hours_text(p, 2) == "07:30–11:00 + 13:30–17:00"
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     # Tới 11:30 (đang nghỉ) -> chờ tới 13:30, nhưng chờ 120 phút > 45 là lỗi; tới 13:00 chờ 30
     # phút thì được; tới 10:30 ở 60 phút -> chạm giờ nghỉ.
     late = DayPlan(id="L1", day=2, leave_stay="11:30", stops=["bt"])
@@ -451,7 +451,7 @@ def test_lunch_break_is_read_and_respected() -> None:
 
 def test_busy_slot_without_time_asks_h5() -> None:
     form = family_form(busy_slots=[{"day": 2}])
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     assert "H5" in profile.questions
     assert profile.days[1].blocked_slots == []
 
@@ -466,7 +466,7 @@ def test_options_prefer_repeating_a_meal_over_a_place_to_visit() -> None:
     }
     form = family_form()
     kinds = {"a": "visit", "b": "visit", "q1": "meal", "q2": "meal"}
-    trip = assemble(ranked, None, form, profile_trip(form, [], []), kinds)
+    trip = assemble(ranked, None, form, profile_trip(form), kinds)
     # Ngày 2: lặp quán q1 (N2-L2) tốt hơn đi lại chỗ chơi a (N2-L1).
     assert [p.id for p in trip["options"][0]["days"]] == ["N1-L1", "N2-L2"]
 
@@ -547,7 +547,7 @@ def test_pilgrimage_site_is_assumed_free() -> None:
 
 
 def test_meals_must_fall_in_lunch_or_dinner() -> None:
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     places = {
         "bt": _place("bt", category="Bảo tàng", stay_low=60, stay_high=60),
         "q": _place("q", kind="meal", category="Nhà hàng", stay_low=45, stay_high=45),
@@ -579,7 +579,7 @@ def test_meals_must_fall_in_lunch_or_dinner() -> None:
 def test_code_moves_the_meal_into_lunch_time() -> None:
     from ailusion.itinerary.coordinator.simulate import place_meals
 
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     places = {
         "bt": _place("bt", category="Bảo tàng", stay_low=90, stay_high=90),
         "chua": _place("chua", category="Chùa", stay_low=60, stay_high=60),
@@ -601,7 +601,7 @@ def test_code_moves_the_meal_into_lunch_time() -> None:
 def test_code_adds_a_spare_meal_when_lunch_is_missing() -> None:
     from ailusion.itinerary.coordinator.simulate import place_meals
 
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     places = {
         "bt": _place("bt", category="Bảo tàng", stay_low=120, stay_high=120),
         "chua": _place("chua", category="Chùa", stay_low=120, stay_high=120),
@@ -830,7 +830,7 @@ def test_split_keeps_a_far_cluster_off_the_central_day() -> None:
 def test_reorder_cuts_zigzag_and_respects_opening_hours() -> None:
     from ailusion.itinerary.coordinator.simulate import reorder_visits, ride_of
 
-    profile = profile_trip(family_form(), [], [])
+    profile = profile_trip(family_form())
     window = profile.days[1]
     places = {k: _place(k, category=k, stay_low=30, stay_high=30) for k in ("a", "b", "c")}
     pos = {STAY: 0, "a": 1, "b": 2, "c": 3}  # trên một đường thẳng, mỗi khoảng 10 phút
@@ -948,7 +948,7 @@ async def test_shortlist_keeps_one_branch_per_chain_for_the_whole_trip() -> None
     from ailusion.itinerary.shared.models import dump_places, same_brand
 
     form = family_form(destination="Đà Lạt", end_date="2026-10-26", busy_slots=[])
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     visits = {
         k: _place(k, category=c, lat=11.94, lng=108.44 + i * 0.01, stay_low=60, stay_high=90)
         for i, (k, c) in enumerate((("h", "Hồ"), ("d", "Đồi chè"), ("th", "Thác"), ("v", "Vườn")))
@@ -976,7 +976,7 @@ async def test_shortlist_keeps_one_branch_per_chain_for_the_whole_trip() -> None
 def test_place_meals_never_eats_one_chain_twice_a_day() -> None:
     from ailusion.itinerary.coordinator.simulate import place_meals
 
-    profile = profile_trip(family_form(destination="Đà Lạt", busy_slots=[]), [], [])
+    profile = profile_trip(family_form(destination="Đà Lạt", busy_slots=[]))
     places = _dalat_meals() | {
         "a": _place("a", category="Hồ", stay_low=120, stay_high=120),
         "b": _place("b", category="Khu du lịch", stay_low=330, stay_high=330),
@@ -1003,7 +1003,7 @@ def test_night_market_goes_last_instead_of_waiting_hours() -> None:
     from ailusion.itinerary.coordinator.simulate import place_meals, reorder_visits
     from ailusion.itinerary.shared.models import opens_late
 
-    profile = profile_trip(family_form(destination="Đà Lạt", busy_slots=[]), [], [])
+    profile = profile_trip(family_form(destination="Đà Lạt", busy_slots=[]))
     window = profile.days[1]  # 08:00–21:00
     places = {
         "cd": _place(
@@ -1133,3 +1133,31 @@ def test_planner_dashes_between_codes_are_not_codes() -> None:
     a = PlanDraft.model_validate({"id": "L1", "leave_stay": "08:00", "stops": "Q3 – D1 — D8"})
     b = PlanDraft.model_validate({"id": "L2", "leave_stay": "08:00", "stops": ["Q3", "–", "D1"]})
     assert a.stops == ["Q3", "D1", "D8"] and b.stops == ["Q3", "D1"]
+
+
+def test_low_budget_puts_costly_meals_and_tickets_last() -> None:
+    """5 triệu cho 2 người Phú Quốc: tiền nên tiêu ~646k/ngày cả đoàn -> 1 bữa ≤ ~107k/người, 1 vé
+    ≤ ~323k/người. Quán 250k, công viên nước 700k xếp sau, chỉ dùng khi thiếu; chỗ user chọn giữ."""
+    from ailusion.itinerary.coordinator.score import costly_ids
+
+    cheap = _place("bunquay", kind="meal", category="Quán ăn", price=50_000)
+    dear = _place("resort", kind="meal", category="Nhà hàng", price=250_000)
+    park = _place("aqua", category="Công viên nước", price=700_000)
+    beach = _place("beach", category="Bãi biển", price=0)
+    mine = _place("mine", category="Công viên nước", price=700_000, must=True)
+    costly, meal_cap, visit_cap = costly_ids([cheap, dear, park, beach, mine], 646_000, 2)
+    assert costly == {"resort", "aqua"} and meal_cap == 107_666 and visit_cap == 323_000
+    pool, _ = pick_pool([park, beach], [dear, cheap], 1, 1, center=None, per_group=3, costly=costly)
+    assert [p.place_id for p in pool] == ["beach", "bunquay"]  # đủ chỗ rẻ: không lấy chỗ đắt
+    assert costly_ids([dear], None, 2)[0] == set()  # không ngân sách / không giới hạn: không lọc
+    seafood = _place("seafood", kind="meal", category="Nhà hàng", price=1_000_000)
+    costly2, *_ = costly_ids([dear, seafood], 646_000, 2)
+    pool, _ = pick_pool([beach], [seafood, dear], 1, 1, center=None, per_group=3, costly=costly2)
+    assert [p.place_id for p in pool] == ["beach", "resort"]  # thiếu quán rẻ: lấy quán đắt rẻ nhất
+
+
+def test_place_named_like_the_destination_is_the_destination() -> None:
+    from ailusion.itinerary.coordinator.filter import same_words
+
+    assert same_words("Phú Quốc", "phu quoc") and same_words("Đà Lạt", "da lat")
+    assert not same_words("Phú Quốc Prison", "Phú Quốc")

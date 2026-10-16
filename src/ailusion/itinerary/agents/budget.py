@@ -149,8 +149,13 @@ def name_on_page(name: str, destination: str, page: str) -> bool:
     An 80.000đ cho Chợ Bà Lê từ trang không hề nhắc Chợ Bà Lê. So cả cụm chứ không từng chữ: tên
     Việt toàn âm tiết ngắn ("chợ", "bà", "lê") trùng chữ thường ("dành cho", "lễ")."""
     core = core_name(name, destination)
+    # Tên chỉ là tên điểm đến ("Phú Quốc"): trang nào về điểm đến cũng nhắc, kể cả trang vé máy
+    # bay (từng nhận giá vé Hà Nội – Phú Quốc làm giá "chỗ chơi" Phú Quốc). Không nhận.
+    dest = " ".join(re.findall(r"\w+", _plain(destination)))
+    if not core or core == dest:
+        return False
     words = " ".join(re.findall(r"\w+", _plain(plain_text(page))))
-    return bool(core) and f" {core} " in f" {words} "
+    return f" {core} " in f" {words} "
 
 
 def accept_price(find: PriceFind, page_text: str) -> bool:

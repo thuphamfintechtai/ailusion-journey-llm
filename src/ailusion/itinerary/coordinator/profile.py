@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import statistics
 from typing import Any
 
 from ..shared.context import Ctx
@@ -42,25 +41,16 @@ from ..shared.form import (
 )
 from ..shared.models import DayWindow, ItineraryState, TripProfile, form_of, profile_of
 from ..shared.tools import tool_ok
-
-
-def base_daily_cost(stay_prices: list[int], meal_prices: list[int]) -> int | None:
-    """Chi phí tối thiểu 1 người 1 ngày = giá phòng phổ biến ÷ 2 + 3 × giá 1 bữa phổ biến.
-
-    Tiền đi lại chưa tính (chưa có nguồn); trung vị lấy từ chính dữ liệu tool của điểm đến.
-    """
-    if not stay_prices or not meal_prices:
-        return None
-    return int(statistics.median(stay_prices) / 2 + 3 * statistics.median(meal_prices))
+from .levels import budget_level, price_levels
 
 
 def profile_trip(
     form: TripForm,
-    stay_prices: list[int],
-    meal_prices: list[int],
+    price_levels: dict[str, dict[str, int]] | None = None,
     travel_to: dict[str, int] | None = None,
 ) -> TripProfile:
-    """`travel_to`: phút đi đã hỏi get_route, khoá "hub" (bến -> chỗ ở), "busy:<ngày>"."""
+    """`price_levels`: mặt bằng giá của điểm đến (coordinator/levels.py). `travel_to`: phút đi đã
+    hỏi get_route, khoá "hub" (bến -> chỗ ở), "busy:<ngày>"."""
     travel_to = travel_to or {}
     guess: list[str] = []
 
@@ -165,7 +155,6 @@ def profile_trip(
         max_effort = "M1"
 
     # Phần 4 — nhóm khách (B0 → B4, dòng đúng đầu tiên)
-    base = base_daily_cost(stay_prices, meal_prices)
     per_day = daily_budget(form)
     low_days = sum(d.free_minutes < LOW_FREE_MINUTES for d in days)
     if form.priority:
@@ -193,7 +182,7 @@ def profile_trip(
         sort_order=SORT_ORDER[group],
         daily_budget=per_day,
         trip_budget=trip_budget(form),
-        base_daily_cost=base,
+        price_levels=price_levels,
         guess=guess,
     )
     profile.questions = questions_for(form, profile)
@@ -312,38 +301,31 @@ async def nhan_form(state: ItineraryState, ctx: Ctx) -> dict:
 async def phan_nhom(state: ItineraryState, ctx: Ctx) -> dict:
     form = form_of(state)
     await ctx.log("phan_nhom", "step", "Phân nhóm khách bằng luật, tính giờ rảnh từng ngày")
+    # Mặt bằng giá của cả điểm đến (`price_stats_vnd`, tính trước khi cắt `limit`): chỉ cần số
+    # thống kê, không cần danh sách nên lấy 1 chỗ.
     (geo, stays_probe, food_probe), logs = await ctx.many(
         [
             ("geocode_vn", {"address": form.destination}),
-            (
-                "find_stays",
-                {"destination": form.destination, "sort_by": "popular", "limit": 20},
-            ),
-            (
-                "find_places",
-                {"destination": form.destination, "category": "Nhà hàng", "limit": 30},
-            ),
+            ("find_stays", {"destination": form.destination, "limit": 1}),
+            ("find_places", {"destination": form.destination, "category": "Nhà hàng", "limit": 1}),
         ]
     )
     top = (geo.get("results") or [{}])[0] if tool_ok(geo) else {}
     center = [top["lat"], top["lng"]] if top.get("lat") is not None else None
-    stay_prices = [
-        int(s["price_per_night_vnd"])
-        for s in (stays_probe.get("stays") or [] if tool_ok(stays_probe) else [])
-        if s.get("price_per_night_vnd")
-    ]
-    meal_prices = [
-        int(p["price_vnd"]["vnd"])
-        for p in (food_probe.get("places") or [] if tool_ok(food_probe) else [])
-        if isinstance(p.get("price_vnd"), dict) and p["price_vnd"].get("vnd")
-    ]
-    profile = profile_trip(form, stay_prices, meal_prices)
+    levels = price_levels(
+        stays_probe if tool_ok(stays_probe) else {}, food_probe if tool_ok(food_probe) else {}
+    )
+    profile = profile_trip(form, levels)
     text = (
         f"Nhóm {profile.group} {GROUP_NAMES[profile.group]} (luật {profile.rule}); rảnh "
         + " / ".join(str(d.free_minutes) for d in profile.days)
         + " phút"
     )
     await ctx.log("phan_nhom", "plan", text)
+    # Báo sớm (trước khi lập lịch) khi ngân sách thấp so với mặt bằng giá của điểm đến.
+    level = budget_level(form, profile)
+    if level and level.get("log"):
+        await ctx.log("phan_nhom", "finding", level["log"])
     return {"profile": profile.model_dump(mode="json"), "center": center, "tool_log": logs}
 
 
