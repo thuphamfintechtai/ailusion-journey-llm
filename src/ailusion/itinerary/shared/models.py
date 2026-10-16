@@ -103,15 +103,24 @@ class Place:
 
     @property
     def rating_trusted(self) -> bool:
-        """Sao tin được để nêu làm lý do chọn. Bayes: số review thật nhiều hơn số review ảo của
-        tiên nghiệm (dữ liệu thật quyết định điểm) và cao hơn sao tiên nghiệm (hơn mức chung của
-        cùng loại ở điểm đến). Hoeffding: từ TRUSTED_HOEFFDING."""
+        """Sao tin được để nêu làm lý do chọn. Bayes: chỉ cần đủ review — số review thật nhiều hơn
+        số review ảo của tiên nghiệm (dữ liệu thật quyết định điểm, không phải sao giả định).
+        Hoeffding: từ TRUSTED_HOEFFDING."""
         basis = self.rating_basis or {}
         if self.rating_adjusted is not None and basis.get("method") == "bayes":
-            return self.reviews >= (basis.get("prior_reviews") or 0) and self.rating_adjusted > (
-                basis.get("prior_mean") or 0
-            )
+            return self.reviews >= (basis.get("prior_reviews") or 0)
         return (self.rating_floor or 0) >= TRUSTED_HOEFFDING
+
+    @property
+    def rating_above_peers(self) -> bool:
+        """Bayes: sao tin được (đủ review) và cao hơn sao tiên nghiệm — hơn mức chung của cùng
+        loại ở điểm đến. Dùng cho "được đánh giá cao"."""
+        basis = self.rating_basis or {}
+        return (
+            self.rating_trusted
+            and self.rating_adjusted is not None
+            and self.rating_adjusted > (basis.get("prior_mean") or 0)
+        )
 
 
 TRUSTED_HOEFFDING = 4.0  # tự đặt (từ trước): sao Hoeffding từ mức này thì nêu "tin được"

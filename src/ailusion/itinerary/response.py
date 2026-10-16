@@ -978,8 +978,8 @@ def _far_reason(p: Place) -> str:
     if p.matches_purpose:
         parts.append("hợp mục đích chuyến")
     bayes = (p.rating_basis or {}).get("method") == "bayes"
-    # Bayes: tin được (đủ review, hơn mức chung cùng loại); Hoeffding: từ 4,3 (tự đặt, từ trước).
-    if p.rating is not None and (p.rating_trusted if bayes else (p.rating_floor or 0) >= 4.3):
+    # Bayes: đủ review và hơn mức chung cùng loại; Hoeffding: từ 4,3 (tự đặt, từ trước).
+    if p.rating is not None and (p.rating_above_peers if bayes else (p.rating_floor or 0) >= 4.3):
         parts.append(f"được đánh giá cao ({p.rating:.1f}★, {_count(p.reviews)} đánh giá)")
     elif p.reviews >= 5000:
         parts.append(f"rất nổi tiếng ({_count(p.reviews)} đánh giá)")

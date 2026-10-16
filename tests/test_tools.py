@@ -94,6 +94,10 @@ def test_rating_floor_uses_mcp_bayes_and_falls_back_to_hoeffding() -> None:
     pool: dict = {}
     add_places(pool, result, "find_places")
     a, b, c = pool["a"], pool["b"], pool["c"]
-    assert a.rating_floor == 4.683 and a.rating_trusted
+    assert a.rating_floor == 4.683 and a.rating_trusted and a.rating_above_peers
     assert b.rating_floor == 4.52 and not b.rating_trusted
+    # Đủ review mà sao chỉ ngang mức chung (Lăng Khải Định 4,5★ / 17.168): vẫn "tin được",
+    # nhưng không phải "được đánh giá cao".
+    pool["a"].rating_adjusted = 4.3
+    assert a.rating_trusted and not a.rating_above_peers
     assert c.rating_floor == rating_floor(4.8, 40) and c.rating_trusted  # 4,026 ≥ 4,0
