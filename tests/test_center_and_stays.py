@@ -64,7 +64,7 @@ def test_far_and_over_budget_stays_are_dropped() -> None:
 
 def test_a_day_without_any_place_is_not_reported_as_fine() -> None:
     form = _form()
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     plan = DayPlan(id="N2-D1", day=2, leave_stay="08:00", stops=[])
     reason = check_plan(plan, {}, {}, profile.days[1], profile, form)
     assert plan.status == "fail" and reason and "không còn chỗ nào" in reason

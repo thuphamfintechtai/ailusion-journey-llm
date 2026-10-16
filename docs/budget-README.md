@@ -26,7 +26,9 @@ Ghép 3 phương án: tổng ước nằm trong khoảng ngân sách
         │
         ├─ vượt mức trên  → hỏi user (giữ lịch / đổi lịch rẻ nhất mỗi ngày)
         ├─ thấp hơn mức dưới → ghi chú + gợi ý nâng chỗ ở, thêm hoạt động có phí
-        └─ luôn: % tổng ước là giá ước; ngân sách dưới mức chi tối thiểu của điểm đến
+        └─ luôn: % tổng ước là giá ước
+
+Đầu kết quả: ngân sách so với mặt bằng giá của điểm đến, mỗi mức chi một trung vị (mục 10)
 ```
 
 ---
@@ -59,7 +61,8 @@ Hằng số dùng chung, chỉ khai báo ở đây: `BUDGET_BAND = 0.05`, `EXTRA
 ## 3. Nhóm khách ([coordinator/profile.py](../src/ailusion/itinerary/coordinator/profile.py))
 
 - Luật B0 → B4 xếp nhóm P1–P4. Luật B3 cũ (ngân sách thấp → nhóm tiết kiệm) đã bỏ: xếp tiết kiệm thì cả chuyến tiêu thấp hơn ngân sách tới 35%. P1 chỉ còn khi user chọn ưu tiên "tiết kiệm".
-- `base_daily_cost`: chi tối thiểu 1 người 1 ngày ở điểm đến = giá phòng phổ biến ÷ 2 + 3 × giá 1 bữa phổ biến (trung vị dữ liệu của điểm đến). Dùng ở bước ghép để báo ngân sách quá thấp (mục 8).
+- `price_levels`: mặt bằng giá của CẢ điểm đến — `price_stats_vnd` (p25 / trung vị / p75) của `find_stays` (giá phòng / đêm, mọi chỗ ở có giá) và `find_places` loại "Nhà hàng" (giá mỗi người, mọi quán có giá), MCP tính trước khi cắt `limit`. Ngân sách thấp so với mặt bằng thì bước 3 ghi ngay vào nhật ký (trước khi lập lịch) và kết quả báo ở đầu (mục 10).
+  - Thay `base_daily_cost` cũ (trung vị 20 chỗ ở "phổ biến" ÷ 2 + 3 bữa "Nhà hàng" phổ biến, × số NGÀY): Phú Quốc 2 người 4 ngày ra "tối thiểu 25 triệu" vì 20 chỗ phổ biến toàn resort (trung vị 3,96 triệu / đêm), trong khi trung vị cả 150 chỗ ở có giá là 1,40 triệu.
 
 ## 4. Chỗ ở — phần lớn nhất của ngân sách ([coordinator/score.py](../src/ailusion/itinerary/coordinator/score.py), [coordinator/search.py](../src/ailusion/itinerary/coordinator/search.py))
 
@@ -124,13 +127,13 @@ Phát sinh trên tab Chi phí: `EXTRA_PCT` 10–15%, ngày mưa / lễ +5% vào 
   - **Vượt mức trên** → `ask_user`: giữ lịch, hay đổi sang lịch rẻ nhất mỗi ngày theo tiền cả ngày (`day_money`: `spend`, thiếu thì `cost`).
   - **Thấp hơn / vượt** khoảng → `budget_note`: nhập 1 số thì so với số đó, chọn khoảng thì so với mức dưới / mức trên.
   - `money_notes`:
-    - ngân sách < `base_daily_cost` × số người × số ngày → "thấp hơn mức chi tối thiểu thường gặp ở …";
     - "Khoảng X% tổng ước dựa trên giá ước" (phần tiền từ chỗ chưa có giá thật);
     - thấp hơn mức dưới → gợi ý tối đa `UPGRADE_STAYS` = 2 chỗ ở giá cao hơn vừa tiền còn dư (sao tin được cao trước) và `UPGRADE_VISITS` = 3 chỗ chơi có phí (giá thật) chưa có trong lịch.
   - `unlimited` → bỏ qua mọi luật tiền.
 
 ## 9. Hiển thị (FE)
 
+- Đầu kết quả: khung mức chi (`budget_level`, mục 10) — đỏ khi ngân sách dưới cả mức Tiết kiệm (kèm nút sửa form), xanh khi dưới mức của mức chi đã chọn / mức chi không giới hạn; bảng 3 mức (cả chuyến, phòng / đêm, quán / người), cột đem so với ngân sách tô nền.
 - Thẻ phương án: "Ước tính cho N người: a–b triệu".
 - Tab **Chi phí** ([plan-cost.tsx](../../ailusion-journey-fe/src/components/itinerary/plan-cost.tsx)): chỗ ở / vé / ăn / đi lại / phát sinh, khoảng thấp – cao, ghi "ước" với giá ước.
 - Ghi chú ngân sách (lệch, giá ước, gợi ý nâng) hiện trong phần ghi chú của lộ trình.
@@ -154,3 +157,26 @@ Phát sinh trên tab Chi phí: `EXTRA_PCT` 10–15%, ngày mưa / lễ +5% vào 
 - Chat nhận "không được vượt" (`budget_hard = true`) nhưng khi đổ sang form chưa tự chọn "Sang, không vượt ngân sách" — form vẫn là "Bình thường" (±5%).
 - Gợi ý nâng chỗ ở chỉ là gợi ý, không tự đổi: đổi chỗ ở thì phút đi tới mọi điểm đổi theo, lịch phải xếp lại.
 - Chọn "Trên 10 triệu" thì form FE không có số ở ô ngân sách (chỉ có mức dưới); bấm lập lộ trình vẫn được.
+
+## 10. Mức chi của điểm đến ([coordinator/levels.py](../src/ailusion/itinerary/coordinator/levels.py))
+
+Mỗi mức = phòng × số **đêm** × số phòng (2 người 1 phòng) + 1 bữa × số bữa bắt buộc (theo giờ rảnh từng ngày) × số người. Chưa gồm vé, đi lại, phát sinh: ngân sách dưới mức này là chắc thiếu, không báo nhầm. Đã đặt chỗ ở thì chỉ còn tiền ăn.
+
+| Mức của điểm đến | Giá phòng / đêm, giá quán / người | Phú Quốc 2 người 4 ngày 3 đêm (DB 10/2026) |
+|---|---|---|
+| Tiết kiệm | trung vị nửa rẻ (p25) | 0,80 triệu + 163 nghìn → ~6,0 triệu |
+| Thường gặp | trung vị | 1,40 triệu + 250 nghìn → ~9,7 triệu |
+| Sang | trung vị nửa đắt (p75) | 3,25 triệu + 350 nghìn → ~17,4 triệu |
+
+Mỗi mức chi user chọn so ngân sách (`trip_budget`) với một mức riêng và có lời báo riêng:
+
+| Mức chi | Đem so với | Dưới cả Tiết kiệm (đỏ) | Dưới mức đem so (xanh) | Đủ |
+|---|---|---|---|---|
+| Bình thường | Thường gặp | "Ngân sách thấp so với …": mức tiết kiệm đã khoảng X, hơn ngân sách; lịch ưu tiên chỗ rẻ nhưng tổng vẫn có thể vượt; mức thường gặp khoảng Y | "Ngân sách dưới mức thường gặp ở …": đủ mức tiết kiệm nên lịch ưu tiên chỗ ở, quán rẻ hơn mức giữa | không báo |
+| Sang, không vượt ngân sách | Sang | như trên, kèm "chưa nói tới mức sang (khoảng Z)" | "Ngân sách chưa tới mức sang ở …": lịch chọn chỗ tốt nhất mà không vượt ngân sách | không báo |
+| Không giới hạn | không so ngân sách | — | luôn báo (xanh): lịch chọn theo chất lượng, tổng ước của phương án đề xuất; cao hơn ngân sách thì nói | — |
+
+- Chỉ để báo user, không dùng để lọc / chọn chỗ (chọn chỗ vẫn theo mục 4–7).
+- Ngân sách dưới mức đem so mà có quán / vé đắt hơn phần tiền mỗi ngày (`costly_ids`) thì bước chốt danh sách ghi thêm "đã ưu tiên quán dưới … mỗi người mỗi bữa và chỗ chơi vé dưới … mỗi người".
+- MCP chưa trả `price_stats_vnd` cho quán (bản cũ) thì không báo: không đoán từ vài quán phổ biến nhất.
+- Giá quán trên Google Maps là khoảng giá ("100–200 N ₫" → 150 nghìn); quán bình dân hay không ghi giá nên mức Tiết kiệm có thể cao hơn thực tế đi bụi.

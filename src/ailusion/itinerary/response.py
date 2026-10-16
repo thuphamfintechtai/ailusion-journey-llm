@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from .coordinator.levels import budget_level
 from .coordinator.profile import QUESTIONS
 from .coordinator.simulate import simulate
 from .shared.context import Ctx
@@ -313,6 +314,32 @@ class Profile(BaseModel):
     days: list[DayWindowOut]
 
 
+class Level(BaseModel):
+    """Một mức chi của điểm đến: phòng + ăn cả đoàn cả chuyến (coordinator/levels.py)."""
+
+    key: Literal["saving", "normal", "luxury"]
+    label: str
+    basis: str = Field(description='Cách tính, VD "trung vị nửa rẻ"')
+    stay_night: int
+    meal: int
+    total: int
+
+
+class BudgetLevel(BaseModel):
+    """Ngân sách so với mặt bằng giá của điểm đến, hiện ở đầu kết quả."""
+
+    severity: Literal["warn", "info"]
+    title: str
+    text: str
+    style: str = Field(description="Mức chi user chọn (spend_style)")
+    target: Literal["normal", "luxury"] | None = Field(
+        None, description="Mức của điểm đến đem so với ngân sách; không giới hạn: None"
+    )
+    budget: int | None = None
+    levels: list[Level] = Field(default_factory=list)
+    scope: str = ""
+
+
 class Stats(BaseModel):
     llm_calls: int = 0
     tool_calls: int = 0
@@ -360,6 +387,9 @@ class ItineraryResponse(BaseModel):
     why: str = ""
     warnings: list[dict[str, str]] = Field(default_factory=list)
     ask_user: dict[str, Any] | None = None
+    budget_level: BudgetLevel | None = Field(
+        None, description="Ngân sách thấp so với điểm đến / mức chi không giới hạn"
+    )
     guesses: list[str] = Field(default_factory=list, description="Đang giả định vì user chưa nói")
     understood: list[dict[str, str]] = Field(
         default_factory=list, description="Ý lấy từ lời nhắn, kèm câu trích (bước 2)"
@@ -500,6 +530,11 @@ def to_response(state: dict[str, Any], thread_id: str, seconds: float) -> Itiner
         in {s for o in options for d in o.days for s in [it.place_id for it in d.items] if s}
     ]
     notes += verify[:5]
+    chosen = next(
+        (o for o in state["trip"]["options"] if o["id"] == decision.get("chosen")),
+        state["trip"]["options"][0] if state["trip"]["options"] else {},
+    )
+    level = budget_level(form, profile, chosen.get("estimate"))
     return ItineraryResponse(
         status="ok",
         stay=stay,
@@ -510,6 +545,7 @@ def to_response(state: dict[str, Any], thread_id: str, seconds: float) -> Itiner
             {"id": w["id"], "decision": w["decision"]} for w in decision.get("warnings") or []
         ],
         ask_user=state["trip"].get("ask_user"),
+        budget_level=BudgetLevel(**level) if level else None,
         notes=notes,
         festivals=state.get("festivals") or [],
         packing=[
@@ -1164,6 +1200,8 @@ def itinerary_markdown(resp: ItineraryResponse) -> str:
         f"**Lộ trình {resp.destination} {resp.days} ngày** · nhóm {group} "
         f"{GROUP_NAMES.get(group, '')} · đề xuất **{chosen.name}**",
     ]
+    if lv := resp.budget_level:
+        lines += ["", f"{'⚠️' if lv.severity == 'warn' else 'ℹ️'} **{lv.title}.** {lv.text}"]
     if resp.why:
         lines += ["", resp.why]
     if resp.stay:

@@ -54,7 +54,7 @@ def _within(total: int, budget: int) -> bool:
 
 def test_saving_group_still_uses_the_budget_not_a_third_of_it() -> None:
     form = _form()
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     trip = assemble(_ranked([300_000, 600_000, 900_000, 1_200_000, 1_500_000]), STAY, form, profile)
     best = trip["options"][0]
     assert _within(best["estimate"], 5_000_000), best["estimate"]
@@ -66,7 +66,7 @@ def test_saving_group_still_uses_the_budget_not_a_third_of_it() -> None:
 
 def test_comfortable_group_does_not_go_far_over_the_budget() -> None:
     form = _form(budget=7_000_000, priority="comfort")
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     # Nhóm đỡ mệt xếp lịch đắt (ít ngồi xe) lên đầu: cách cũ ra ~10 triệu.
     ranked = {
         d: list(reversed(v))
@@ -82,7 +82,7 @@ def test_days_spend_evenly_and_options_differ() -> None:
         _ranked([300_000, 600_000, 900_000, 1_200_000, 1_500_000]),
         STAY,
         form,
-        profile_trip(form, [], []),
+        profile_trip(form),
     )
     spends = [p.metrics["spend"] for p in trip["options"][0]["days"]]
     assert max(spends) - min(spends) <= 300_000  # không dồn tiền vào 1 ngày
@@ -123,7 +123,7 @@ def test_planner_gets_an_even_daily_target() -> None:
     form = _form()
     state = {
         "form": form.model_dump(mode="json"),
-        "profile": profile_trip(form, [], []).model_dump(mode="json"),
+        "profile": profile_trip(form).model_dump(mode="json"),
         "stay": {"price": 400_000},
     }
     # 5.000.000 ÷ 1,125 − 400.000 × 2 đêm × 1 phòng = 3.644.444 → chia 3 ngày ≈ 1.215.000
@@ -225,7 +225,7 @@ def test_money_notes_explain_estimates_and_suggest_upgrades() -> None:
     assert pool["x"].price == 250_000 and pool["x"].price_by == "ước theo chỗ chơi khác"
 
     form = _form(budget=20_000_000)  # 2 người 3 ngày, tiêu ít hơn nhiều
-    profile = profile_trip(form, [600_000], [100_000])
+    profile = profile_trip(form)
     places = {
         "v": place("v", price=100_000, by="ước theo loại"),
         "show": place("show", price=600_000, by="tool", reviews=5000),
@@ -259,11 +259,6 @@ def test_money_notes_explain_estimates_and_suggest_upgrades() -> None:
     notes = " ".join(money_notes(state, best, form, profile))
     assert "giá ước" in notes
     assert "Resort Sông Hoài" in notes and "show" in notes
-    # Ngân sách dưới mức chi tối thiểu của điểm đến: nói rõ.
-    poor = _form(budget=500_000)
-    assert "thấp hơn mức chi tối thiểu" in " ".join(
-        money_notes(state, None, poor, profile_trip(poor, [600_000], [100_000]))
-    )
 
 
 def test_day_over_budget_compares_full_day_spend_with_planner_target() -> None:
@@ -272,7 +267,7 @@ def test_day_over_budget_compares_full_day_spend_with_planner_target() -> None:
     from ailusion.itinerary.shared.models import STAY, DayWindow
 
     form = _form(budget=3_000_000, travel_mode="taxi")
-    profile = profile_trip(form, [], [])
+    profile = profile_trip(form)
     # Planner và bước chạy thử cùng 1 số: (3tr ÷ 1,125 − tiền phòng) ÷ 3 ngày.
     allowance = day_allowance(form, profile.trip_budget, 300_000)
     assert allowance == day_target(

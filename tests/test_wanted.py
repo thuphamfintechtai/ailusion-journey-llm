@@ -92,7 +92,7 @@ def test_free_text_needs_become_need_codes_and_keep_chosen_ones() -> None:
 def test_many_places_priority_prefers_more_stops() -> None:
     from ailusion.itinerary.coordinator.profile import profile_trip
 
-    profile = profile_trip(_form(priority="many_places"), [], [])
+    profile = profile_trip(_form(priority="many_places"))
     assert profile.group == "P5" and profile.sort_order[0] == ("num_stops", "max")
 
 
