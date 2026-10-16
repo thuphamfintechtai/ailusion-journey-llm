@@ -95,8 +95,8 @@ def name_words(p: Place) -> set[str]:
 
 
 def merge_duplicates(places: dict[str, Place]) -> list[str]:
-    """Gộp chỗ chơi DB lưu 2 lần dưới 2 tên: cùng loại, cách nhau < SAME_PLACE_KM, tên có ≥ 2
-    chữ riêng trùng nhau. Giữ chỗ nhiều review hơn. Trả tên các chỗ đã bỏ."""
+    """Gộp chỗ chơi DB lưu 2 lần dưới 2 tên: cách nhau < SAME_PLACE_KM và trùng hẳn tên, hoặc
+    cùng loại và tên có ≥ 2 chữ riêng trùng nhau. Giữ chỗ nhiều review hơn. Trả tên chỗ đã bỏ."""
     removed = []
     visits = sorted(
         (p for p in places.values() if p.kind == "visit"), key=lambda p: -(p.reviews or 0)
@@ -107,9 +107,13 @@ def merge_duplicates(places: dict[str, Place]) -> list[str]:
             (
                 k
                 for k in kept
-                if k.group == p.group
-                and km((k.lat, k.lng), (p.lat, p.lng)) < SAME_PLACE_KM
-                and len(name_words(k) & name_words(p)) >= 2
+                if km((k.lat, k.lng), (p.lat, p.lng)) < SAME_PLACE_KM
+                and (
+                    # Trùng hẳn tên (khác chữ hoa: "Phố Cổ Hội An" / "Phố cổ Hội An") thì không
+                    # cần cùng loại — Google ghi 2 loại khác nhau cho cùng một nơi.
+                    (name_words(k) == name_words(p) and bool(name_words(p)))
+                    or (k.group == p.group and len(name_words(k) & name_words(p)) >= 2)
+                )
             ),
             None,
         )

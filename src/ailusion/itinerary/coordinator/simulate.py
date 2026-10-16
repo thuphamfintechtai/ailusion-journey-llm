@@ -342,6 +342,20 @@ def fill_visits(
         last = run.stops[-1].leave if run.stops else to_minutes(plan.leave_stay)
         return dinner and last < to_minutes(DINNER[0]) - DINNER_FREE_MAX
 
+    def idle_gap() -> int | None:
+        """Vị trí chỗ phải chờ lâu (> LONG_WAIT_MAX) trước khi vào — VD nghỉ trưa xong trống tới
+        16:00 chờ chỗ buổi tối mở: chèn chỗ chơi vào khoảng trống đó."""
+        run = simulate(plan, places, matrix, window, required_needs, long_stay=False)
+        # Chỉ chỗ chơi: chờ tới giờ ăn (trống trước bữa tối) là thời gian tự do có chủ ý.
+        return next(
+            (
+                i
+                for i, s in enumerate(run.stops)
+                if places[s.place_id].kind != "meal" and s.start - s.arrive > LONG_WAIT_MAX
+            ),
+            None,
+        )
+
     def meal_gap() -> int | None:
         """Vị trí bữa thứ 2 của cặp bữa liền nhau cách ≥ MIN_MEAL_GAP mà ở giữa không có gì."""
         stops = plan.stops
@@ -353,7 +367,8 @@ def fill_visits(
     _, now = issues(plan.stops)
     while added < MAX_FILLS + 2:
         visits = [q for q in plan.stops if places[q].kind != "meal"]
-        if len(visits) >= need_visits and not ends_early() and meal_gap() is None:
+        idle = idle_gap()
+        if len(visits) >= need_visits and not ends_early() and meal_gap() is None and idle is None:
             break
         anchors = plan.stops or [STAY]
         groups = {places[v].group for v in visits}
@@ -383,6 +398,7 @@ def fill_visits(
                 plan.stops[: near + 1] + [q] + plan.stops[near + 1 :],
                 plan.stops + [q],
                 *([plan.stops[:gap] + [q] + plan.stops[gap:]] if gap else []),
+                *([plan.stops[:idle] + [q] + plan.stops[idle:]] if idle is not None else []),
             ):
                 trial, n = issues(stops)
                 if n <= now and (best is None or n < best[1]):
@@ -525,6 +541,7 @@ def place_meals(
         return (
             sum(map(is_meal_issue, run.issues)),
             len(run.issues),
+            len(evening_after_dinner(trial, run.stops, places)),
             dropped,
             added,
             len(kinds) - len(set(kinds)),
@@ -536,6 +553,36 @@ def place_meals(
     changed = best != plan.stops
     plan.stops = best
     return changed
+
+
+def evening_after_dinner(plan: DayPlan, stops: list[Stop], places: dict[str, Place]) -> list[str]:
+    """Chỗ buổi tối (mở từ chiều muộn: show, chợ đêm, phố đi bộ, bar…) xếp TRƯỚC bữa tối mà sau
+    bữa tối vẫn còn mở đủ thời gian ở: nên đi sau bữa tối. "Đảo Ký Ức Hội An" mở 16:00, show
+    diễn buổi tối — tới 16:00 ở 1 tiếng rồi đi ăn là bỏ lỡ show. Không phải lỗi mà là ưu tiên
+    khi bước đặt quán (place_meals) chọn thứ tự: sau lỗi giờ ăn và lỗi khác — thiếu bữa tối hay
+    chờ 3 tiếng tới bữa tối còn tệ hơn đi show trước khi ăn."""
+    dinner = next(
+        (
+            s
+            for s in stops
+            if places[s.place_id].kind == "meal"
+            and to_minutes(DINNER[0]) <= s.start <= to_minutes(DINNER[1])
+        ),
+        None,
+    )
+    if dinner is None:
+        return []
+    out = []
+    for s in stops:
+        p = places[s.place_id]
+        if s is dinner:
+            break
+        if p.kind == "meal" or p.must or not opens_late(p, plan.day):
+            continue
+        span = p.hours.get(plan.day)
+        if span and span[1] >= dinner.leave + (p.stay_low or 0):
+            out.append(f"{p.name} mở tới {hhmm(span[1])}: nên đi sau bữa tối")
+    return out
 
 
 def is_meal_issue(issue: str) -> bool:
@@ -969,12 +1016,17 @@ async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
         + [v for v in all_visits if v not in own]
         for day, cs in day_codes_of(state).items()
     }
-    filled = sum(
-        fill_visits(
-            p, places, matrix, windows[p.day], day_visits.get(p.day, []), spare[p.day], needs
-        )
-        for p in plans.values()
-    )
+    # Không bù chỗ đã có trong lịch của ngày khác: phương án ghép 1 lịch mỗi ngày, bù chỗ ngày
+    # khác là đi lại 1 chỗ 2 ngày (Nhà thờ tộc Trần ngày 1 lẫn ngày 2).
+    used_on: dict[int, set[str]] = {}
+    for p in plans.values():
+        used_on.setdefault(p.day, set()).update(p.stops)
+    filled = 0
+    for p in plans.values():
+        taken = set().union(*(s for d, s in used_on.items() if d != p.day))
+        free = [v for v in day_visits.get(p.day, []) if v not in taken]
+        filled += fill_visits(p, places, matrix, windows[p.day], free, spare[p.day], needs)
+        used_on[p.day].update(p.stops)
     if filled:
         await ctx.log("kiem_lich", "finding", f"Bù {filled} chỗ chơi cho ngày còn trống")
         # Bù chỗ có đặt lại quán: lọc lại quán sai giờ / trùng giờ ăn một lượt cuối.

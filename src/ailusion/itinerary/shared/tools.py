@@ -60,7 +60,14 @@ SKIP_WORDS = (
     "đại lý",
     "văn phòng",
     "tiếp viên nữ",  # "Quán bar tiếp viên nữ": không đưa vào lộ trình du lịch
+    # Quầy bán vé / thông tin du lịch (loại "Phòng vé"): không phải chỗ chơi, tên có "phố cổ"
+    # nên từng được nhận là hợp mục đích và vào lịch.
+    "phòng vé",
+    "quầy vé",
+    "quầy thông tin",
+    "bán vé",  # "Doanh nghiệp bán vé sự kiện": đại lý bán vé show, không phải nơi diễn
 )
+SWEET_WORDS = ("yogurt", "sữa chua", "ice cream", "gelato")
 # Chỗ chơi đêm, không phải bữa ăn: loại Google "Quán bar karaoke", "Quán bar", "Quán rượu" có chữ
 # "quán" nên từng bị coi là quán. Quán bia / quán nhậu vẫn là quán (có bán đồ ăn).
 NIGHT_WORDS = ("karaoke", "quán bar", "quán rượu", "hộp đêm", "pub", "night club", "nightclub")
@@ -78,6 +85,14 @@ def kind_of(category: str, name: str) -> str | None:
     bảo tàng nên là chỗ chơi."""
     text = nfc(f" {category} {name} ").lower()
     if any(w in text for w in SKIP_WORDS):
+        return None
+    # Quán đồ ngọt Google ghi sai loại ("Hội an market yogurt" loại "Chợ"): không phải chỗ chơi,
+    # cũng không làm bữa chính. Thứ user nhắc (VD sữa chua) vẫn tìm riêng (any_kind).
+    if any(w in nfc(name).lower() for w in SWEET_WORDS):
+        return None
+    # Tên bắt đầu bằng "Vé …" / "Ticket …": trang bán vé ("Vé Show Ký Ức Hội An - Huyền Tất Tần
+    # Tật vé Đà Nẵng" Google ghi loại "Điểm thu hút"), không phải nơi đến.
+    if re.match(r"(vé|ticket)\b", nfc(name).lower().strip()):
         return None
     # Loại chỉ là mã số (Vietmap trả "4004, 4004-2") thì coi như không có loại: đoán theo tên.
     words = nfc(f" {category} ").lower() if re.search(r"[^\W\d_]", category) else text

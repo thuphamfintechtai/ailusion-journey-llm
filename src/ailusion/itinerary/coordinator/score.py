@@ -15,7 +15,7 @@ import math
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import required_meals
+from ..shared.form import required_meals, to_minutes
 from ..shared.math import km, median, pareto_tiers
 from ..shared.models import (
     STAY,
@@ -193,12 +193,14 @@ def capacity(days: list[DayWindow], typical_stay: float, typical_hop: float) -> 
 
 
 def place_vector(center: tuple[float, float] | None) -> Any:
-    """4 mặt so chỗ (bước 8), đổi về "lớn hơn là tốt hơn": sao tin được, hợp mục đích,
-    giá (âm), khoảng cách tới trung tâm (âm)."""
+    """5 mặt so chỗ (bước 8), đổi về "lớn hơn là tốt hơn": sao tin được, độ nổi tiếng (số
+    review), hợp mục đích, giá (âm), khoảng cách tới trung tâm (âm). Thiếu độ nổi tiếng thì chỗ
+    4,3★ / 29.000 review (Chùa Cầu) bị phòng tranh 4,8★ / 88 review hơn hẳn, rơi khỏi danh sách."""
 
     def vector(p: Place) -> list[float | None]:
         return [
             p.rating_floor,
+            float(p.reviews or 0),
             1.0 if p.matches_purpose else 0.0,
             -p.price if p.price is not None else None,
             -km(center, (p.lat, p.lng)) if center else 0.0,
@@ -224,18 +226,28 @@ def pick_pool(
     need_meals: int,
     center: Any,
     per_group: int,
+    used: set[str] | None = None,
 ) -> tuple[list[Place], list[list[str]]]:
     """Lấy hết tầng 1, rồi tầng 2… cho tới khi đủ số chỗ cả chuyến cần. Quán ăn chọn cùng cách.
 
     Chỗ chơi cùng một loại (`Place.group`: spa, chùa…) lấy tối đa `type_cap` chỗ (`per_group` =
     số ngày; spa thưa hơn): không thì "nghỉ dưỡng" kéo toàn spa vào, ngày nào cũng spa.
+    Chỗ chơi dành cho phương án khác (`used`) chỉ lấy khi chỗ của phương án này chưa đủ: chia
+    tầng chung thì chỗ nổi tiếng nhất (Chùa Cầu) luôn ở tầng 1, phương án nào cũng có, ngày 1 của
+    3 phương án giống hệt nhau.
     """
+    used = used or set()
     chosen: list[Place] = []
     tiers_out: list[list[str]] = []
-    for items, need, cap in ((visits, need_visits, per_group), (meals, need_meals, None)):
+    own = [p for p in visits if p.place_id not in used]
+    others = [p for p in visits if p.place_id in used]
+    for items, need, cap in ((own, need_visits, per_group), (meals, need_meals, None)):
         taken = 0
         per: dict[str, int] = {}
-        for tier in pareto_tiers(items, place_vector(center)):
+        tiers = pareto_tiers(items, place_vector(center))
+        if items is own:  # phần của phương án khác xếp sau mọi tầng của phương án này
+            tiers += pareto_tiers(others, place_vector(center))
+        for tier in tiers:
             if taken >= need:
                 break
             kept = []
@@ -294,6 +306,8 @@ def split_by_day(
     days: list[int],
     minutes: dict[str, float],
     travel_mode: str | None = None,
+    windows: dict[int, tuple[int, int]] | None = None,
+    used: set[str] | None = None,
 ) -> dict[int, list[str]]:
     """Chia chỗ cho từng ngày TRƯỚC khi đưa Planner, theo cụm gần nhau, không ngày nào đi lại chỗ
     ngày khác.
@@ -305,13 +319,23 @@ def split_by_day(
     nhận được thì nới luật cùng loại, rồi nới số lượng. Quán ăn: đủ nhiều (≥ `MEALS_PER_DAY` quán
     mỗi ngày) thì vào ngày có cụm chỗ chơi gần nhất; ít thì ngày nào cũng dùng chung.
     `minutes`: "id_a|id_b" -> phút đi (ma trận bước 8); thiếu cặp thì ước theo đường chim bay.
+    `windows`: ngày -> (phút bắt đầu, phút kết thúc) của ngày; có thì "mở cửa" còn phải là giờ mở
+    giao khung ngày đủ thời gian ở (show Ký Ức Hội An 16:00–22:00 không vào ngày cuối về 12:30).
+    `used`: chỗ của phương án khác (mượn khi thiếu) — không làm mỏ neo khi còn chỗ của mình, không
+    thì chỗ nổi tiếng nhất (Chùa Cầu) neo ngày 1 của cả 3 phương án.
     """
     visits = sorted((p for p in pool if p.kind != "meal"), key=lambda p: -(p.reviews or 0))
     meals = sorted((p for p in pool if p.kind == "meal"), key=lambda p: -(p.reviews or 0))
     out: dict[int, list[Place]] = {d: [] for d in days}
 
     def is_open(p: Place, day: int) -> bool:
-        return p.hours.get(day, "chưa rõ") is not None  # chưa rõ giờ thì coi như mở
+        span = p.hours.get(day, "chưa rõ")
+        if span is None:
+            return False
+        if span == "chưa rõ" or not windows or day not in windows:
+            return True  # chưa rõ giờ thì coi như mở
+        start, end = windows[day]
+        return min(span[1], end) - max(span[0], start) >= (p.stay_low or 0)
 
     def gap(a: Place, b: Place) -> float:
         known = [
@@ -347,7 +371,8 @@ def split_by_day(
         if out[day]:
             continue
         open_ = [p for p in rest if is_open(p, day)]
-        options = [p for p in open_ if p.place_id in famous] or open_
+        own = [p for p in open_ if p.place_id not in (used or set())] or open_
+        options = [p for p in own if p.place_id in famous] or own
         if not options:
             continue
         anchor = (
@@ -699,17 +724,26 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         n_meal_slots * MEAL_CHOICES,
         center,
         per_group=len(profile.days),
+        used=used,
     )
     pool = kept + pool
     # Đặt mã theo độ nổi tiếng (số review giảm dần): Planner hay chọn các mã đầu danh sách, nên
     # chỗ nổi tiếng (Cầu Vàng, Bà Nà…) đứng trước spa / quán nhỏ có sao cao nhưng ít người biết.
-    pool = sorted(pool, key=lambda p: (p.kind == "meal", -(p.reviews or 0)))
+    # Chỗ mượn của phương án khác (`used`) đặt mã sau chỗ của phương án này.
+    pool = sorted(pool, key=lambda p: (p.kind == "meal", p.place_id in used, -(p.reviews or 0)))
     codes = {}
     for p in pool:
         prefix = "Q" if p.kind == "meal" else "D"
         codes[f"{prefix}{sum(c.startswith(prefix) for c in codes) + 1}"] = p.place_id
     code_of = {pid: c for c, pid in codes.items()}
-    by_day = split_by_day(pool, [d.day for d in profile.days], matrix, form.travel_mode)
+    by_day = split_by_day(
+        pool,
+        [d.day for d in profile.days],
+        matrix,
+        form.travel_mode,
+        {d.day: (to_minutes(d.day_start), to_minutes(d.day_end)) for d in profile.days},
+        used,
+    )
     day_codes = {str(d): [code_of[pid] for pid in pids] for d, pids in by_day.items()}
     # Chỗ user chọn nằm ở ngày nào thì mọi lịch của ngày đó phải có.
     must_codes = {d: [c for c in cs if places[codes[c]].must] for d, cs in day_codes.items()}

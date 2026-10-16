@@ -81,11 +81,16 @@ class Place:
 
     @property
     def group(self) -> str:
-        """Nhóm loại chỗ (spa, chùa, bảo tàng…); không thuộc nhóm nào thì là loại Google ghi."""
+        """Nhóm loại chỗ (spa, chùa, bảo tàng…) theo loại Google ghi trước, tên chỉ xét khi loại
+        trống / chỉ là mã số: "Chùa Cầu" loại "Điểm mốc lịch sử" là cây cầu, không phải chùa (tính
+        là chùa thì bị luật mỗi ngày 1 chùa đẩy khỏi danh sách). Không thuộc nhóm nào thì là loại
+        Google ghi."""
+        cat = unicodedata.normalize("NFC", self.category).strip().lower()
+        text = cat if re.search(r"[^\W\d_]", cat) else self.text
         for name, words in CATEGORY_GROUPS.items():
-            if any(w in self.text for w in words):
+            if any(w in text for w in words):
                 return name
-        return unicodedata.normalize("NFC", self.category).strip().lower() or self.text
+        return cat or self.text
 
     @property
     def breakfast_only(self) -> bool:
