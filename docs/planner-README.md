@@ -31,10 +31,10 @@ Bước `chot_danh_sach` ([coordinator/score.py](../src/ailusion/itinerary/coord
 
 | | Cách làm |
 |---|---|
-| Danh sách chỗ (`pool`) | Chỗ user chọn + thứ user nhắc, rồi chia tầng không bị trội (`pick_pool`: sao tin được, số review, hợp mục đích, giá, khoảng cách); mỗi loại tối đa `type_cap` chỗ (spa thưa hơn) |
+| Danh sách chỗ (`pool`) | Chỗ user chọn + thứ user nhắc, rồi chia tầng không bị trội (`pick_pool`: sao tin được, số review, hợp mục đích, giá, khoảng cách); mỗi loại tối đa `type_cap` chỗ (spa thưa hơn); loại Google chung chung ("Điểm thu hút khách du lịch") không tính là một loại |
 | Mã | `D1, D2…` chỗ chơi, `Q1, Q2…` quán — đặt theo số review giảm dần (Planner hay chọn mã đầu), chỗ mượn của nhánh khác đặt sau |
-| Chia ngày (`split_by_day`) | Mỗi ngày 1 "mỏ neo" (chỗ nổi tiếng nhất còn mở, ưu tiên chỗ của nhánh), các chỗ khác vào ngày gần cụm nhất; giờ mở cửa phải giao khung ngày đủ thời gian ở; mỗi ngày tối đa 1 chỗ mỗi loại |
-| Phút đi | Ma trận `distance_matrix` (tối đa `MAX_MATRIX_POINTS` = 45 điểm); thiếu cặp thì ước theo đường chim bay |
+| Chia ngày (`split_by_day`) | Mỗi ngày 1 "mỏ neo" (chỗ nổi tiếng nhất còn mở, ưu tiên chỗ của nhánh), các chỗ khác vào ngày gần cụm nhất; giờ mở cửa phải giao khung ngày đủ thời gian ở; mỗi ngày tối đa 1 chỗ mỗi loại; chỗ (cả quán) vào ngày có chỗ chơi cách ≤ `NEAR_MIN` 30 phút trước, ngày gần đã đầy mới sang ngày xa — không trộn 2 vùng khi không cần |
+| Phút đi | Ma trận `distance_matrix` (tối đa `MAX_MATRIX_POINTS` = 45 điểm, không đủ thì chia cho chỗ chơi / quán theo tỉ lệ nhu cầu); thiếu cặp thì ước theo đường chim bay |
 
 Văn bản đưa Planner, mỗi ngày:
 
@@ -62,7 +62,7 @@ Nhãn trên từng chỗ: `hợp mục đích` · `đi buổi tối` (mở từ 
 | 2 | `leave_stay` không sớm hơn giờ bắt đầu ngày |
 | 3 | Cả lịch (kể cả ở lại, đi về) nằm trong giờ rảnh; không chạm khung bị chặn; khung "chỉ ăn uống" chỉ xếp quán |
 | 4 | Không xếp chỗ đóng cửa; tới trong giờ mở cửa |
-| 5 | Mỗi ngày ≥ 2 lịch, không trùng hệt |
+| 5 | Mỗi ngày ≥ 2 lịch, không trùng hệt; mã lịch (L1, L2…) không trùng trong ngày; mỗi lịch không 2 chỗ chơi cùng loại (cột thứ 3; loại "–" là chưa rõ loại, không tính); ưu tiên chỗ "hợp mục đích" |
 | 6 | Bữa ăn: mỗi bữa bắt buộc của ngày (tính sẵn theo giờ bắt đầu ngày) 1 quán, đặt gần đúng chỗ — **code tự dời quán vào đúng giờ ăn**, bỏ quán thừa / sai giờ; không 2 quán liền nhau; mọi chỗ bán đồ ăn tính 1 bữa; quán "bữa sáng" chỉ làm bữa sáng |
 | 7 | Ngày kéo tới tối có chỗ chơi sáng **và** chiều; ngày dài ít nhất `MIN_VISITS` (2) chỗ chơi; đừng nhồi tới mức về trễ (code bỏ bớt); spa từ 13:00; chỗ "đi buổi tối" xếp sau bữa tối |
 | 8 | Các lịch trong ngày có mức tiền khác nhau quanh "Tiêu khoảng X": 1 lịch thấp hơn, 1 lịch cao hơn chút (lịch thứ 3 nếu có thì sát) |
@@ -92,7 +92,7 @@ Mã ngoài danh sách · mã không thuộc ngày đó · rời chỗ ở sớm 
 
 Theo thứ tự:
 
-1. `drop_same_group`, `drop_unfit_afternoon` — mỗi ngày 1 chỗ mỗi loại; spa / massage trong ngày kết thúc trước 13:00 thì bỏ.
+1. `drop_same_group`, `drop_unfit_afternoon` — mỗi ngày 1 chỗ mỗi loại; spa / massage trong ngày kết thúc trước 13:00 thì bỏ. `add_missing_musts` — chỗ user chọn mà Planner bỏ sót: chèn vào chỗ ít lỗi nhất.
 2. `reorder_visits` — sắp lại thứ tự chỗ chơi cho ít ngồi xe (Planner hay chạy qua lại).
 3. `place_meals` — đặt quán vào đúng giờ ăn (thử mọi chỗ chèn, thêm quán dự phòng khi thiếu bữa, bỏ bớt quán thừa). Ưu tiên: ít lỗi giờ ăn → ít lỗi khác → chỗ buổi tối đi sau bữa tối (`evening_after_dinner`) → ít bỏ quán Planner chọn → ít thêm quán → ít bữa cùng loại món → về sớm.
 4. `drop_extra_meals`, `drop_bad_meals` — mỗi khung giờ ăn 1 quán, mỗi món user nhắc 1 bữa/ngày; bỏ quán ngoài giờ ăn, chờ mở cửa lâu, quá sát bữa trước (< 150 phút); đặt lại quán.
@@ -123,7 +123,10 @@ Nghỉ trưa (`NAP_MIN` = 90 phút) do bước chạy thử tự chèn sau bữa
 | `NAP_MIN` | 90 phút | shared/form.py |
 | `MIN_MEAL_GAP` | 150 phút | shared/form.py |
 | `LONG_WAIT_MAX` / `DINNER_FREE_MAX` | 45 / 150 phút | shared/form.py |
-| `FILL_NEAR_MIN` / `MAX_FILLS` | 30 phút / 3 | simulate.py |
+| `NEAR_MIN` | 30 phút (bù chỗ, chia ngày) | shared/form.py |
+| `MAX_FILLS` | 3 | simulate.py |
+| `MEAL_WAIT_MAX` | 45 phút | simulate.py |
+| `SPARE_VISITS` | 2 chỗ dư / ngày | score.py |
 | `MIN_VISITS` / `FULL_DAY_MIN` | 2 chỗ / 360 phút | shared/form.py |
 | `MAX_TRIMS` | 3 chỗ | simulate.py |
 
@@ -135,6 +138,9 @@ Nghỉ trưa (`NAP_MIN` = 90 phút) do bước chạy thử tự chèn sau bữa
 - Luật tiền khớp 2 lịch mỗi ngày (`MIN_PLANS_PER_DAY` = 2): 1 thấp, 1 cao hơn chút, lịch thứ 3 (nếu có) sát.
 - Luật bữa ăn rút gọn: bỏ phần code đã tự làm (khung giờ trưa / tối, 2 bữa cách 2,5 tiếng) — Planner chỉ cần chọn đủ quán, đặt gần đúng chỗ.
 - `LONG_WAIT_MAX`, `DINNER_FREE_MAX`, `MIN_VISITS`, `FULL_DAY_MIN` chuyển sang shared/form.py để prompt và code cùng một số.
+- Luật 5 thêm: mã lịch không trùng trong ngày; không 2 chỗ chơi cùng loại trong một lịch (loại "–" không tính); ưu tiên "hợp mục đích". A/B 5 chuyến: lỗi luật 21 → 8 (xem [planner-prompt-review.md](planner-prompt-review.md) mục 10).
+- Output sai kiểu một trường không còn làm mất cả lô; mã lịch trùng không còn ghi đè nhau.
+- Chờ giờ ăn chỉ tới mốc kế tiếp; chỗ hẹn giờ không kéo bữa sáng tới bữa tối; ngày cuối ăn trưa sớm cho kịp về. Chỗ user chọn bị bỏ sót thì code chèn. Chia ngày xét ngày gần trước (không trộn 2 vùng khi không cần). Ma trận chia điểm theo nhu cầu (chuyến dài đủ chỗ chơi). Tên chỗ bắt buộc không tính chữ của tên điểm đến khi so khớp.
 
 ## Còn để ý
 

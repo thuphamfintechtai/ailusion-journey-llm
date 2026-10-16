@@ -291,3 +291,54 @@ def test_every_group_choice_is_accepted_without_asking_again() -> None:
         p = profile_trip(_form(**{"group_type": None, **base, **answer}), [], [])
         assert "H1" not in p.questions, label
     assert "H1" in profile_trip(_form(group_type=None, **base), [], []).questions
+
+
+def test_fixed_time_later_does_not_push_breakfast_to_dinner() -> None:
+    """Chỗ hẹn 16:30 cuối ngày: quán sáng 08:05 ăn luôn (từng bị chờ tới 18:00, 595 phút), quán
+    trưa chờ tới mốc trưa, quán tối sau chỗ hẹn chờ tới 18:00."""
+    form = _form()
+    window = profile_trip(form, [], []).days[1]  # ngày 2: 08:00–20:45
+    places = {
+        "b": _place("b", kind="meal", category="Nhà hàng", stay_low=45, stay_high=45),
+        "a": _place("a", stay_low=60, stay_high=60),
+        "l": _place("l", kind="meal", category="Nhà hàng", stay_low=45, stay_high=45),
+        "cho": _place("cho", stay_low=45, stay_high=45, must=True, must_time="16:30"),
+        "d": _place("d", kind="meal", category="Nhà hàng", stay_low=45, stay_high=45),
+    }
+    ids = [*places, STAY]
+    matrix = {(p, q): 5.0 for p in ids for q in ids if p != q}
+    plan = DayPlan(id="L1", day=2, leave_stay="08:00", stops=["b", "a", "l", "cho", "d"])
+    run = simulate(plan, places, matrix, window, [], long_stay=False)
+    start = {s.place_id: s.start for s in run.stops}
+    assert start["b"] == 8 * 60 + 5  # ăn sáng luôn
+    assert start["l"] == 11 * 60 + 30  # chờ tới mốc trưa, không nhảy sang mốc tối
+    assert start["cho"] == 16 * 60 + 30 and start["d"] == 18 * 60
+    assert not [i for i in run.issues if "bữa" in i or "giờ ăn" in i]
+
+
+def test_code_adds_the_chosen_place_the_planner_left_out() -> None:
+    from ailusion.itinerary.coordinator.simulate import add_missing_musts
+
+    form = _form()
+    window = profile_trip(form, [], []).days[1]
+    places = {
+        "a": _place("a", stay_low=60, stay_high=60),
+        "cho": _place("cho", stay_low=60, stay_high=60, must=True, must_day=2),
+        "q": _place("q", kind="meal", category="Nhà hàng", stay_low=45, stay_high=45),
+    }
+    ids = [*places, STAY]
+    matrix = {(p, q): 10.0 for p in ids for q in ids if p != q}
+    plan = DayPlan(id="L1", day=2, leave_stay="08:00", stops=["a", "q"])
+    assert add_missing_musts(plan, places, matrix, window, ["cho"], [], []) == 1
+    assert "cho" in plan.stops and {"a", "q"} <= set(plan.stops)
+    assert add_missing_musts(plan, places, matrix, window, ["cho"], [], []) == 0  # đã có: thôi
+
+
+def test_city_name_in_the_chosen_place_does_not_count_toward_a_match() -> None:
+    """ "Đại Nội Huế" (chuyến Huế) không khớp quán "NGƯ PHỐ - Chả Cá Hà Nội tại Huế" chỉ vì có chữ
+    "Nội" và "Huế"; vẫn khớp "Đại Nội Kinh Thành Huế"."""
+    shop = _place("shop", name="NGƯ PHỐ - Chả Cá Hà Nội tại Huế", category="Nhà hàng")
+    citadel = _place("citadel", name="Đại Nội Kinh Thành Huế", category="4004, 4004-2")
+    assert best_match("Đại Nội Huế", [shop], place="Huế") is None
+    assert best_match("Đại Nội Huế", [shop, citadel], place="Huế").place_id == "citadel"  # type: ignore[union-attr]
+    assert name_match("Huế", "Kinh Thành Huế", place="Huế") == 1.0  # chỉ có tên điểm đến: giữ

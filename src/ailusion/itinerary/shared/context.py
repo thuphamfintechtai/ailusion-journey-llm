@@ -116,7 +116,14 @@ class Ctx:
         return (parsed if isinstance(parsed, schema) else schema.model_validate(parsed)), 1, usage
 
     async def log(self, node: str, kind: str, text: str, **data: Any) -> None:
-        await agent_log.publish(self.thread_id, node=self._node(node), kind=kind, text=text, **data)
+        """Nhật ký bước cho web. Ghi hỏng (Redis timeout khi máy bận) thì bỏ qua: nhật ký không được
+        làm sập nhánh / cả lộ trình (4 lộ trình chạy cùng lúc từng trả HTTP 500 vì vậy)."""
+        try:
+            await agent_log.publish(
+                self.thread_id, node=self._node(node), kind=kind, text=text, **data
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("không ghi được nhật ký %s/%s", self._node(node), kind)
 
     async def _trace(self, kind: str, text: str, node: str = "", **data: Any) -> None:
         """Nhật ký lượt gọi tool / lỗi LLM. Ghi nhật ký hỏng thì bỏ qua, không làm hỏng lộ trình."""

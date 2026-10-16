@@ -510,3 +510,43 @@ def test_food_court_counts_as_a_meal_and_breakfast_places_only_serve_breakfast()
     issues = simulate(plan, places, m, w, [], False).issues
     assert any("chỉ bán bữa sáng" in i for i in issues)
     assert drop_bad_meals(plan, places, m, w, []) == 1 and "x" not in plan.stops
+
+
+def test_short_last_day_eats_lunch_early_enough_to_get_back():
+    """Ngày cuối về 12:30, quán trưa cách chỗ ở 46 phút: không chờ tới mốc 11:30 (về 13:01), chỉ
+    chờ cho đủ cách bữa sáng 150 phút rồi ăn, về kịp."""
+    from ailusion.itinerary.coordinator.simulate import simulate
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "visit") -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Công viên"
+        return Place(pid, pid, cat, kind, 10.2, 103.96, stay_low=45 if kind == "meal" else 60)
+
+    places = {"b": place("b", "meal"), "v": place("v"), "l": place("l", "meal")}
+    m = {(STAY, "b"): 20, ("b", "v"): 8, ("v", "l"): 27, ("l", STAY): 46}
+    w = DayWindow(day=3, day_start="08:00", day_end="12:30", free_minutes=270)
+    plan = DayPlan(id="L", day=3, leave_stay="08:00", stops=["b", "v", "l"])
+    run = simulate(plan, places, m, w, [], False)
+    lunch = run.stops[2]
+    assert lunch.arrive == 10 * 60 + 40 and lunch.start == 10 * 60 + 50  # 08:20 + 150 phút
+    assert run.back <= 12 * 60 + 30 and not run.issues
+
+
+def test_short_last_day_never_eats_two_meals_too_close_to_get_back_earlier():
+    """Ngày cuối: chờ tới mốc 11:30 thì về trễ; chỉ chờ cho đủ cách bữa sáng 150 phút (vẫn trễ chút
+    thì trễ ít hơn), không ăn trưa ngay 10:53 chỉ cách bữa sáng 117 phút."""
+    from ailusion.itinerary.coordinator.simulate import simulate
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    def place(pid: str, kind: str = "visit") -> Place:
+        cat = "Nhà hàng" if kind == "meal" else "Bảo tàng"
+        return Place(pid, pid, cat, kind, 16.06, 108.22, stay_low=45 if kind == "meal" else 60)
+
+    places = {"b": place("b", "meal"), "v": place("v"), "l": place("l", "meal")}
+    m = {(STAY, "b"): 56, ("b", "v"): 2, ("v", "l"): 10, ("l", STAY): 20}
+    w = DayWindow(day=3, day_start="08:00", day_end="12:30", free_minutes=270)
+    plan = DayPlan(id="L", day=3, leave_stay="08:00", stops=["b", "v", "l"])
+    run = simulate(plan, places, m, w, [], False)
+    breakfast, lunch = run.stops[0], run.stops[2]
+    assert lunch.start - breakfast.start == 150  # 08:56 + 150 = 11:26
+    assert not [i for i in run.issues if "chỉ cách bữa trước" in i]

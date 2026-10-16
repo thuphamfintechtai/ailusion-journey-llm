@@ -4,7 +4,7 @@
   bật thinking; `cost_usd` quy token ra tiền theo bảng giá OpenAI.
 - LLM không tự đặt số, mọi thứ nó đưa phải tìm lại được: `quote_found` (câu trích nằm nguyên văn
   trong văn bản gốc), `money_in` (số tiền trong một đoạn chữ), `numbers_in` (con số trong lời
-  giải thích).
+  giải thích). Trang web dạng markdown thì so sau `plain_text` (bỏ **đậm**, link, ảnh).
 """
 
 from __future__ import annotations
@@ -40,12 +40,33 @@ def quote_found(quote: str, message: str) -> bool:
     return bool(q) and q in norm(message)
 
 
+MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+DATA_URI = re.compile(r"data:[\w/+.-]+;base64,[\w+/=]+")
+MD_MARKS = re.compile(r"[*_`~|#>]+")
+
+
+def plain_text(text: str) -> str:
+    """Bỏ định dạng markdown của trang web (ảnh, ảnh base64, link -> chữ của link, **đậm**, _,
+    `, #, >, bảng |) để so câu trích: trang ghi "**Vé tham quan:** 80.000 VNĐ" thì câu
+    "Vé tham quan: 80.000 VNĐ" vẫn khớp."""
+    text = MD_IMAGE.sub(" ", text)
+    text = DATA_URI.sub(" ", text)
+    text = MD_LINK.sub(r"\1", text)
+    return MD_MARKS.sub(" ", text)
+
+
+# "1,2 triệu", "1.5tr", "2 triệu" (không khớp "tr" đầu chữ "trẻ", "trên").
+MILLIONS = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:triệu|tr)(?!\w)")
+
+
 def money_in(text: str) -> list[int]:
-    """Mọi số tiền trong đoạn chữ: "120.000đ", "120k", "50,000 VND" -> 120000, 120000, 50000."""
-    out = []
-    for num, unit in re.findall(
-        r"(\d{1,3}(?:[.,]\d{3})+|\d+)\s*(k|nghìn|ngàn|đ|₫|vnd)?", text.lower()
-    ):
+    """Mọi số tiền trong đoạn chữ: "120.000đ", "120k", "50,000 VND", "80.000 VNĐ", "1,2 triệu" ->
+    120000, 120000, 50000, 80000, 1200000."""
+    low = text.lower()
+    out = [int(round(float(n.replace(",", ".")) * 1_000_000)) for n in MILLIONS.findall(low)]
+    low = MILLIONS.sub(" ", low)
+    for num, unit in re.findall(r"(\d{1,3}(?:[.,]\d{3})+|\d+)\s*(k|nghìn|ngàn|vnđ|vnd|đ|₫)?", low):
         value = int(num.replace(".", "").replace(",", ""))
         if unit in ("k", "nghìn", "ngàn"):
             value *= 1000

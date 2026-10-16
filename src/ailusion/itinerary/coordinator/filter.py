@@ -28,6 +28,7 @@ from ..shared.models import (
     wanted_words,
 )
 from ..shared.tools import add_hours, add_needs
+from .score import fill_price_estimates
 
 
 def keyword_match(place: Place, purposes: list[str]) -> str | None:
@@ -277,4 +278,15 @@ async def xac_minh(state: ItineraryState, ctx: Ctx) -> dict:
         check_purposes(ctx, places, to_exp, profile.purposes),
         find_prices(ctx, places, to_bud, form.destination),
     )
+    refresh_estimates(places)
     return {"places": dump_places(places), **a.add(b).state()}
+
+
+def refresh_estimates(places: dict[str, Place]) -> None:
+    """Giá ước (bước 7) tính TRƯỚC Agent Budget, theo trung vị giá thật của chỗ cùng loại: Agent
+    Budget nhận thêm giá thật thì các giá ước đó cũ. Xoá mọi giá "ước …" rồi ước lại một lượt."""
+    for p in places.values():
+        if (p.price_by or "").startswith("ước"):
+            p.price = p.price_by = None
+            p.price_low = p.price_high = None
+    fill_price_estimates(places)

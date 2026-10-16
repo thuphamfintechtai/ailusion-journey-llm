@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..shared.context import Ctx
 from ..shared.form import (
@@ -52,7 +52,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 2. Giờ rời chỗ ở (`leave_stay`) không sớm hơn giờ bắt đầu ngày.
 3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày; không chạm khung bị chặn. Khung "chỉ ăn uống" chỉ được xếp quán Q….
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
-5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau.
+5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau; `id` mỗi lịch (L1, L2, …) không trùng nhau trong ngày. Mỗi lịch không có 2 chỗ chơi D… cùng `loại` (cột thứ 3 của danh sách: 2 chùa, 2 bảo tàng, 2 spa… là lỗi; loại "–" là chưa rõ loại, không tính). Ưu tiên chỗ ghi "hợp mục đích".
 6. Bữa ăn: dòng "Ngày …" ghi bữa BẮT BUỘC của ngày (và bữa tuỳ chọn / không xếp), tính sẵn theo giờ bắt đầu ngày. Mỗi bữa bắt buộc 1 quán Q… trong `stops`, đặt gần đúng chỗ (bữa sáng đầu ngày nếu có, trưa giữa ngày, tối cuối ngày) — hệ thống tự dời quán vào đúng giờ ăn và bỏ quán thừa / sai giờ. Giữa 2 bữa là chỗ chơi, không xếp 2 quán liền nhau; mọi chỗ bán đồ ăn (kể cả "khu ăn uống", "ăn vặt") tính là 1 bữa; quán loại "bữa sáng" chỉ làm bữa sáng; thiếu bữa bắt buộc là lỗi. `leave_stay` = giờ bắt đầu ngày.
 7. Ngày kéo tới tối: có chỗ chơi buổi sáng VÀ buổi chiều (sau bữa trưa / nghỉ trưa) rồi mới tới bữa tối — không kết thúc ngày sau bữa trưa; ngày dài ít nhất {min_visits} chỗ chơi. Đừng nhồi tới mức về trễ: lịch quá dài hệ thống bỏ bớt chỗ. Spa, massage, xông hơi xếp buổi chiều / tối (từ 13:00). Chỗ ghi "đi buổi tối" (show, chợ đêm, bar…) xếp sau bữa tối nếu còn mở.
 8. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày có mức tiền khác nhau quanh con số đó — một lịch thấp hơn, một lịch cao hơn một chút (lịch thứ 3 nếu có thì sát con số), để hệ thống ghép được cả chuyến sát ngân sách. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
@@ -101,10 +101,33 @@ class PlanDraft(BaseModel):
     leave_stay: str = Field(description="Giờ rời chỗ ở 'HH:MM'")
     stops: list[str] = Field(description="Mã chỗ theo thứ tự đi, gồm cả quán ăn đúng giờ ăn")
 
+    # Một trường sai kiểu (id số, leave_stay null, stops là chuỗi) làm Pydantic từ chối CẢ câu trả
+    # lời -> mất cả lô tới 4 ngày, mỗi ngày còn 1 lịch dự phòng. Đổi về dạng đúng thay vì bỏ.
+    @field_validator("id", "leave_stay", mode="before")
+    @classmethod
+    def text(cls, v: Any) -> str:
+        return "" if v is None else str(v).strip()
+
+    @field_validator("stops", mode="before")
+    @classmethod
+    def codes(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = re.split(r"[\s,;→>\-–—]+", v)
+        # Phần tử chỉ là dấu (gạch "–" model chèn giữa các mã) không phải mã: bỏ, không báo mã lạ.
+        return [str(c).strip() for c in v if c is not None and re.search(r"\w", str(c))]
+
 
 class DayDrafts(BaseModel):
     day: int = Field(ge=1)
     plans: list[PlanDraft]
+
+    @field_validator("plans", mode="before")
+    @classmethod
+    def plan_list(cls, v: Any) -> Any:
+        """Bỏ phần tử không phải lịch (null, chuỗi) thay vì từ chối cả câu trả lời."""
+        return [p for p in v if isinstance(p, dict | PlanDraft)] if isinstance(v, list) else v
 
 
 class PlannerOutput(BaseModel):
@@ -122,7 +145,7 @@ def plan_errors(
     """Lỗi theo ngày: mã ngoài danh sách, rời chỗ ở sớm hơn giờ bắt đầu, < 2 lịch, lịch trùng,
     mã lặp trong một lịch, 2 chỗ chơi cùng loại trong một lịch, mã không thuộc ngày đó.
 
-    `days`: ngày -> giờ bắt đầu ngày ("HH:MM"). `groups`: mã chỗ chơi D… -> loại (Place.group).
+    `days`: ngày -> giờ bắt đầu ngày ("HH:MM"). `groups`: mã chỗ chơi D… -> khoá loại (`Place.type_key`).
     `allowed`: ngày -> mã được dùng ngày đó (bước 8 chia sẵn); None = mọi mã.
     `required`: ngày -> mã chỗ user chọn, mọi lịch ngày đó phải có.
     """
@@ -138,6 +161,12 @@ def plan_errors(
         sigs = set()
         visit_sets: set[frozenset[str]] = set()
         dup_sigs: set[tuple[str, ...]] = set()
+        ids = [p.id for p in d.plans]
+        twice_ids = sorted({i for i in ids if i and ids.count(i) > 1})
+        if twice_ids:
+            errs.append(f"mã lịch {', '.join(twice_ids)} trùng nhau trong ngày")
+        if any(not i for i in ids):
+            errs.append("có lịch không có mã")
         for p in d.plans:
             bad = [c for c in p.stops if c not in codes]
             if bad:
@@ -292,7 +321,7 @@ def planner_input(
             price = f"{p.price:,} đ".replace(",", ".") if p.price is not None else "chưa có giá"
             from_stay = matrix.get((STAY, p.place_id))
             lines.append(
-                f"{code} | {p.name} | {p.group} | {hours_text(p, d.day)} | {stay} | {price} | "
+                f"{code} | {p.name} | {p.type_label} | {hours_text(p, d.day)} | {stay} | {price} | "
                 f"{int(from_stay) if from_stay is not None else '?'} phút"
                 + (" | hợp mục đích" if p.matches_purpose else "")
                 + (" | đi buổi tối" if p.kind != "meal" and opens_late(p, d.day) else "")
@@ -340,9 +369,9 @@ async def call_planner(
 
 
 def visit_groups(state: dict[str, Any]) -> dict[str, str]:
-    """Mã chỗ chơi D… -> loại (Place.group), để kiểm luật 7–8."""
+    """Mã chỗ chơi D… -> khoá loại (`Place.type_key`: chưa rõ loại thì khoá riêng), để kiểm luật 5."""
     places = places_of(state)
-    return {c: places[pid].group for c, pid in state["codes"].items() if c.startswith("D")}
+    return {c: places[pid].type_key for c, pid in state["codes"].items() if c.startswith("D")}
 
 
 def errors_of(plan_id: str, day_errors: list[str]) -> list[str]:
@@ -373,7 +402,7 @@ def fallback_plans(
             if (
                 pid not in used
                 and pid not in take
-                and all(places[pid].group != places[t].group for t in take)
+                and all(places[pid].type_key != places[t].type_key for t in take)
             ):
                 take.append(pid)
         take = take or visits[:1]
@@ -430,8 +459,13 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
                 )
                 if not stops:
                     continue
+                # Mã lịch trùng / trống trong ngày (Planner ghi 2 lịch "L1"): đặt mã khác, không ghi
+                # đè làm mất lịch trước.
+                pid, k = f"N{d.day}-{p.id or 'L'}", 2
+                while pid in plans:
+                    pid, k = f"N{d.day}-{p.id or 'L'}-{k}", k + 1
                 plan = DayPlan(
-                    id=f"N{d.day}-{p.id}",
+                    id=pid,
                     day=d.day,
                     leave_stay=p.leave_stay if len(p.leave_stay) == 5 else starts[d.day],
                     stops=stops,

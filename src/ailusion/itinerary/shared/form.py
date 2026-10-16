@@ -356,6 +356,10 @@ LONG_WAIT_MAX = 45  # tới một chỗ phải chờ mở cửa / chờ giờ ă
 DINNER_FREE_MAX = 150  # bữa tối là điểm cuối ngày: trống trước đó tối đa ngần này phút (tự do)
 MIN_VISITS = 2  # ngày dài (rảnh ≥ FULL_DAY_MIN phút) ít nhất ngần này chỗ chơi, thiếu thì code bù
 FULL_DAY_MIN = 360
+# "Gần": cách một chỗ đang có của ngày tối đa ngần này phút. Bù chỗ (simulate.fill_visits) chỉ lấy
+# chỗ gần (không thêm đường vòng); chia chỗ theo ngày (score.split_by_day) xét ngày gần trước (không
+# trộn 2 vùng trong một ngày khi không cần). Số tạm (tự đặt).
+NEAR_MIN = 30
 
 # Tổng ước lệch ngân sách tối đa ±BUDGET_BAND (user yêu cầu) khi user nhập 1 con số.
 BUDGET_BAND = 0.05

@@ -79,7 +79,14 @@ Cách chọn:
 ## 5. Giá vé, giá ăn
 
 1. **DB**: giá Google ghi (VD "100–200 N ₫" → số giữa).
-2. **Agent Budget** ([agents/budget.py](../src/ailusion/itinerary/agents/budget.py)): tối đa `MAX_PRICE_FINDS` = 10 chỗ mỗi lộ trình, mỗi chỗ 1 `web_search` + 1 `fetch_page`; code mở lại link, đoạn trích và số tiền phải có trên trang.
+2. **Agent Budget** ([agents/budget.py](../src/ailusion/itinerary/agents/budget.py)) — chỉ chỗ chơi sắp đưa Planner đang dùng giá ước, tối đa `MAX_PRICE_FINDS` = 10 chỗ. **Agent không gọi tool**, code làm hết:
+   1. `web_search` mỗi chỗ 1 lượt ("giá vé <tên> <điểm đến>", 3 kết quả).
+   2. Agent (1 lượt LLM cho mọi chỗ) đọc đoạn tóm tắt Tavily (`SNIPPET_CHARS` 600) + tối đa `PRICE_WINDOWS` 2 đoạn quanh số tiền / "miễn phí" trong trang (mỗi bên `WINDOW_CHARS` 150) — không phải 700 ký tự đầu trang (toàn menu, logo, ảnh). Trả `{code, price (VND / người lớn, 0 = miễn phí, null = không có), url, quote}`; `price: ""` cũng hiểu là null.
+   3. Code lọc (`trusted_finds`): link phải là kết quả tìm của chính chỗ đó; một câu trích dùng cho 2 chỗ thì bỏ cả hai.
+   4. Code mở lại link (`fetch_page`, mỗi link 1 lần) và nhận khi: đoạn trích có trên trang (bỏ markdown rồi so; trích nối "[...]" thì từng đoạn phải có), số tiền có trong đoạn trích (đọc được "80.000 VNĐ", "120k", "1,2 triệu"), giá 0 thì đoạn trích ghi "miễn phí / không mất phí / không thu phí / free", và trang nhắc lõi tên chỗ liền một cụm (`name_on_page`).
+   5. Nhận → `price_by = "Agent Budget: <link>"`; sau đó mọi giá ước tính lại một lượt (`refresh_estimates`, coordinator/filter.py) vì trung vị cùng loại đã có thêm giá thật.
+
+   Lộ trình Hội An 10/2026: trước sửa 0/10 giá được nhận; sau sửa 5–6/10, đúng cả (Chùa Cầu / Phố Cổ 80.000đ vé phố cổ, Ký Ức Hội An 540.000đ, Làng Gốm Thanh Hà 35.000đ, Chùa Pháp Bảo và Precious Heritage miễn phí).
 3. **Ước** (`fill_price_estimates`, score.py), luôn ghi rõ "ước …":
    1. ≥ 2 chỗ cùng loại có giá thật trong chuyến → trung vị ("ước theo chỗ cùng loại");
    2. khớp bảng `PRICE_BY_TYPE` (**tự đặt**): công viên giải trí 700k · spa 400k · suối khoáng 300k · bảo tàng / di tích 50k · cà phê 60k · bãi biển, chùa, chợ… 0đ ("ước theo loại");

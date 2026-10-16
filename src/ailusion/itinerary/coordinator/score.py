@@ -12,10 +12,11 @@
 from __future__ import annotations
 
 import math
+from itertools import combinations
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import required_meals, to_minutes
+from ..shared.form import NEAR_MIN, required_meals, to_minutes
 from ..shared.math import km, median, pareto_tiers
 from ..shared.models import (
     STAY,
@@ -100,9 +101,14 @@ def fill_price_estimates(places: dict[str, Place]) -> None:
     for p in places.values():
         if p.price is not None and not (p.price_by or "").startswith("ước"):
             known.setdefault("meal" if p.kind == "meal" else p.group, []).append(float(p.price))
-    # Chỗ chơi không khớp loại nào: trung vị giá thật của mọi chỗ chơi trong chuyến (dữ liệu của
-    # chính điểm đến) trước khi dùng số tự đặt VISIT_PRICE.
-    visit_prices = [v for k, vs in known.items() if k != "meal" for v in vs]
+    # Chỗ chơi không khớp loại nào: trung vị giá thật của mọi CHỖ CHƠI trong chuyến (dữ liệu của
+    # chính điểm đến) trước khi dùng số tự đặt VISIT_PRICE. Không lấy quán cà phê nghỉ trưa
+    # (kind "rest") hay quán ăn: giá ly cà phê không phải giá vé.
+    visit_prices = [
+        float(p.price)
+        for p in places.values()
+        if p.kind == "visit" and p.price is not None and not (p.price_by or "").startswith("ước")
+    ]
     for p in places.values():
         if p.price is not None:
             continue
@@ -197,6 +203,27 @@ def capacity(days: list[DayWindow], typical_stay: float, typical_hop: float) -> 
     return [max(1, math.floor(d.free_minutes / per)) for d in days]
 
 
+SPARE_VISITS = 2  # mỗi ngày thêm ngần này chỗ chơi dư để Planner có lựa chọn khi xếp lịch khác nhau
+
+
+def meal_points(want_visits: int, want_meals: int, room: int) -> int:
+    """Số điểm của ma trận dành cho quán (phần còn lại cho chỗ chơi). Đủ chỗ cho cả hai: quán lấy
+    đủ, chỗ chơi lấy phần còn lại. Không đủ: chia theo tỉ lệ nhu cầu — trước đây quán lấy trước,
+    chuyến dài hết chỗ chơi (Đà Lạt 5 ngày: 31 quán, chỗ chơi còn 13 điểm -> ngày 1 chỗ chơi)."""
+    if want_visits + want_meals <= room:
+        return want_meals
+    return round(room * want_meals / (want_visits + want_meals))
+
+
+def visit_need(days: list[DayWindow], visits: list[Place], travel_mode: str | None) -> int:
+    """Số chỗ chơi cả chuyến cần khi CHƯA có ma trận (để chia điểm của ma trận): sức chứa các ngày
+    như `pick_pool` dùng, thời gian ở lại là trung vị các chỗ, phút đi ước theo đường chim bay
+    (`estimate_minutes`) giữa các chỗ; + SPARE_VISITS mỗi ngày."""
+    stay = median([float(p.stay_low) for p in visits if p.stay_low]) or 60.0
+    hop = median([float(estimate_minutes(a, b, travel_mode)) for a, b in combinations(visits, 2)])
+    return sum(capacity(days, stay, hop or 20.0)) + SPARE_VISITS * len(days)
+
+
 def place_vector(center: tuple[float, float] | None) -> Any:
     """5 mặt so chỗ (bước 8), đổi về "lớn hơn là tốt hơn": sao tin được, độ nổi tiếng (số
     review), hợp mục đích, giá (âm), khoảng cách tới trung tâm (âm). Thiếu độ nổi tiếng thì chỗ
@@ -257,9 +284,9 @@ def pick_pool(
                 break
             kept = []
             for p in sorted(tier, key=lambda p: -(p.rating_floor or 0)):
-                if cap is not None and per.get(p.group, 0) >= type_cap(p.group, cap):
+                if cap is not None and per.get(p.type_key, 0) >= type_cap(p.type_key, cap):
                     continue
-                per[p.group] = per.get(p.group, 0) + 1
+                per[p.type_key] = per.get(p.type_key, 0) + 1
                 kept.append(p)
             chosen += kept
             taken += len(kept)
@@ -321,8 +348,12 @@ def split_by_day(
     các mỏ neo trước nhất (phút đi gần nhất tới mỏ neo đã có × hệ số nổi tiếng 0,5–1), để mỗi ngày
     là một vùng. Các chỗ còn lại (nổi tiếng trước) vào ngày có phút đi TRUNG BÌNH tới các chỗ đã
     có của ngày ít nhất, miễn là ngày đó mở cửa, chưa có chỗ cùng loại và chưa đầy. Không ngày nào
-    nhận được thì nới luật cùng loại, rồi nới số lượng. Quán ăn: đủ nhiều (≥ `MEALS_PER_DAY` quán
-    mỗi ngày) thì vào ngày có cụm chỗ chơi gần nhất; ít thì ngày nào cũng dùng chung.
+    nhận được thì nới luật cùng loại, rồi nới số lượng. Ngày có chỗ chơi cách chỗ đó ≤ `NEAR_MIN`
+    phút được xét trước (kể cả khi đã có chỗ cùng loại), ngày gần đã đầy mới sang ngày xa: không
+    trộn 2 vùng trong một ngày khi không cần (chuyến Đà Nẵng: chùa thứ 2 ở Hội An vào ngày ở Đà
+    Nẵng), mà không ngày nào thiếu chỗ (trần mỗi ngày giữ nguyên). Quán ăn: đủ nhiều (≥
+    `MEALS_PER_DAY` quán mỗi ngày) thì vào ngày có cụm chỗ chơi gần nhất, ngày gần trước; ít thì
+    ngày nào cũng dùng chung.
     `minutes`: "id_a|id_b" -> phút đi (ma trận bước 8); thiếu cặp thì ước theo đường chim bay.
     `windows`: ngày -> (phút bắt đầu, phút kết thúc) của ngày; có thì "mở cửa" còn phải là giờ mở
     giao khung ngày đủ thời gian ở (show Ký Ức Hội An 16:00–22:00 không vào ngày cuối về 12:30).
@@ -388,19 +419,38 @@ def split_by_day(
         out[day].append(anchor)
         anchors.append(anchor)
         rest.remove(anchor)
+
+    def near(p: Place, day: int) -> bool:
+        """Cách một chỗ chơi đang có của ngày ≤ NEAR_MIN phút (ngày chưa có chỗ nào: gần)."""
+        members = [q for q in out[day] if q.kind != "meal"]
+        return not members or min(gap(p, q) for q in members) <= NEAR_MIN
+
     per_day = math.ceil(len(visits) / max(1, len(days)))
     for p in rest:
         open_days = [d for d in days if is_open(p, d)] or (list(days) if p.must else [])
-        for rule in ("đủ luật", "nới cùng loại", "nới số lượng"):
+        close = [d for d in open_days if near(p, d)]
+        # Ngày gần trước, kể cả khi đã có chỗ cùng loại (mỗi LỊCH vẫn chỉ 1 chỗ mỗi loại): đẩy sang
+        # ngày ở vùng khác chỉ vì cùng loại từng trộn 2 vùng (chùa thứ 2 ở Hội An vào ngày ở Đà
+        # Nẵng). Ngày gần đã đầy mới sang ngày xa — giữ trần số chỗ mỗi ngày để không ngày nào
+        # thiếu chỗ chơi.
+        for choices, typed in (
+            (close, True),
+            (close, False),
+            (open_days, True),
+            (open_days, False),
+        ):
             fits = [
                 d
-                for d in open_days
-                if (rule == "nới số lượng" or len(out[d]) < per_day)
-                and (rule != "đủ luật" or all(q.group != p.group for q in out[d]))
+                for d in choices
+                if len(out[d]) < per_day
+                and (not typed or all(q.type_key != p.type_key for q in out[d]))
             ]
             if fits:
                 out[min(fits, key=lambda d: (far(p, d), len(out[d])))].append(p)
                 break
+        else:  # mọi ngày mở cửa đã đầy: nới số lượng
+            if open_days:
+                out[min(open_days, key=lambda d: (far(p, d), len(out[d])))].append(p)
     pinned_meals = [m for m in meals if m.must and m.must_day in out]
     for m in pinned_meals:
         out[m.must_day].append(m)  # type: ignore[index]
@@ -408,14 +458,20 @@ def split_by_day(
     if len(meals) >= MEALS_PER_DAY * len(days):
         per_meal = math.ceil(len(meals) / len(days))
         taken = {d: 0 for d in days}
+
+        def cost(d: int, m: Place) -> tuple[float, int]:
+            same = sum(q.kind == "meal" and q.group == m.group for q in out[d])
+            return far(m, d) + SAME_CUISINE_MIN * same, taken[d]
+
         for m in meals:
-            fits = [d for d in days if taken[d] < per_meal] or days
-
-            def cost(d: int, m: Place = m) -> tuple[float, int]:
-                same = sum(q.kind == "meal" and q.group == m.group for q in out[d])
-                return far(m, d) + SAME_CUISINE_MIN * same, taken[d]
-
-            day = min(fits, key=cost)
+            # Quán vào ngày có chỗ chơi gần nó trước (không ăn sáng ở Hội An trong ngày chơi Đà
+            # Nẵng); ngày gần đã đủ quán mới sang ngày khác.
+            fits = (
+                [d for d in days if taken[d] < per_meal and near(m, d)]
+                or [d for d in days if taken[d] < per_meal]
+                or days
+            )
+            day = min(fits, key=lambda d, m=m: cost(d, m))
             out[day].append(m)
             taken[day] += 1
     else:
@@ -653,8 +709,8 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     per: dict[str, int] = {}
     first, rest = [], []
     for p in ordered_visits:
-        per[p.group] = per.get(p.group, 0) + 1
-        (first if per[p.group] <= type_cap(p.group, len(profile.days)) else rest).append(p)
+        per[p.type_key] = per.get(p.type_key, 0) + 1
+        (first if per[p.type_key] <= type_cap(p.type_key, len(profile.days)) else rest).append(p)
     # Chỗ dành cho phương án khác (`used`, xem coordinator/branches.py) xếp sau mọi chỗ của
     # phương án này (cùng nhóm), để 3 phương án đi chỗ khác nhau; thiếu thì vẫn dùng được ở cuối.
     used = set(state.get("used") or [])
@@ -689,8 +745,13 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         2 * len(profile.days),
     )
     # Mỗi bữa ~MEAL_CHOICES quán để chọn: 3 lịch mỗi ngày khác quán, các ngày không ăn lại 1 quán.
-    n_meals = min(len(ordered_meals), n_meal_slots * MEAL_CHOICES + 3)
-    shortlist = ordered_visits[: MAX_MATRIX_POINTS - 1 - n_meals]
+    want_meals = min(len(ordered_meals), n_meal_slots * MEAL_CHOICES + 3)
+    room = MAX_MATRIX_POINTS - 1
+    want_visits = min(
+        len(ordered_visits), visit_need(profile.days, ordered_visits[:room], form.travel_mode)
+    )
+    n_meals = meal_points(want_visits, want_meals, room)
+    shortlist = ordered_visits[: room - n_meals]
     shortlist += ordered_meals[:n_meals]
     points = ([stay] if stay else []) + shortlist
     pairs, m_logs = await matrix_pairs(ctx, points, form.vehicle)
@@ -733,8 +794,7 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
     pool, tiers = pick_pool(
         [p for p in shortlist if p.kind == "visit" and p not in kept],
         [p for p in shortlist if p.kind == "meal" and p not in kept],
-        # Mỗi ngày thêm 2 chỗ dư để Planner có lựa chọn khi xếp 3 lịch khác nhau.
-        sum(caps) + 2 * len(profile.days),
+        sum(caps) + SPARE_VISITS * len(profile.days),
         n_meal_slots * MEAL_CHOICES,
         center,
         per_group=len(profile.days),

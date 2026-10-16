@@ -31,6 +31,11 @@ CATEGORY_GROUPS: dict[str, tuple[str, ...]] = {
     "cà phê": ("cà phê", "cafe", "coffee"),
     "quán bar": ("karaoke", "quán bar", "quán rượu", "hộp đêm", "pub"),
 }
+# Loại Google chung chung, không nói chỗ đó là gì: làng gốm, show Ký Ức Hội An, nông trại cún,
+# rừng thông… đều ghi "Điểm thu hút khách du lịch" (134/360 chỗ chơi của 5 chuyến thử). Coi là
+# một loại thì luật "mỗi lịch / mỗi ngày 1 chỗ mỗi loại" và trần mỗi loại cả chuyến (`type_cap`)
+# chặn cả trăm chỗ khác hẳn nhau: Đà Lạt 5 ngày chỉ còn 1–3 chỗ chơi mỗi ngày.
+GENERIC_CATEGORIES = ("điểm thu hút khách du lịch", "tourist attraction")
 
 
 @dataclass
@@ -91,6 +96,24 @@ class Place:
             if any(w in text for w in words):
                 return name
         return cat or self.text
+
+    @property
+    def typed(self) -> bool:
+        """Có loại cụ thể (chùa, spa, chợ, công viên…): loại Google chung chung
+        (`GENERIC_CATEGORIES`) hay chỉ là mã số ("4004, 4004-2") thì không."""
+        return bool(re.search(r"[^\W\d_]", self.group)) and self.group not in GENERIC_CATEGORIES
+
+    @property
+    def type_key(self) -> str:
+        """Khoá của luật "cùng loại" (mỗi lịch / mỗi ngày 1 chỗ mỗi loại, trần mỗi loại cả chuyến).
+        Chỗ không có loại cụ thể: khoá riêng, không cùng loại với chỗ nào. `group` giữ nguyên cho
+        gộp chỗ trùng tên và ước giá theo loại."""
+        return self.group if self.typed else f"#{self.place_id}"
+
+    @property
+    def type_label(self) -> str:
+        """Cột "loại" đưa Planner: "–" khi chưa rõ loại (khớp luật 5 của prompt)."""
+        return self.group if self.typed else "–"
 
     @property
     def breakfast_only(self) -> bool:
