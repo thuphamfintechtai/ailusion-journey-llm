@@ -42,6 +42,10 @@ class Place:
     lng: float
     rating: float | None = None
     reviews: int = 0
+    # Sao tin được MCP tính (`rating_adjusted`): Bayes theo tiên nghiệm của điểm đến × loại hình;
+    # `rating_basis` = cách tính (method, prior_mean, prior_reviews, prior_level).
+    rating_adjusted: float | None = None
+    rating_basis: dict[str, Any] | None = None
     price: int | None = None  # mỗi người (chỗ chơi, quán) hoặc mỗi đêm (chỗ ở), VND
     price_by: str | None = None  # "tool" | "Agent Budget"
     # Khoảng giá mỗi người Google ghi (VD "100–200 N ₫"); `price` là số giữa. Thiếu cao = "Trên …".
@@ -91,9 +95,26 @@ class Place:
 
     @property
     def rating_floor(self) -> float | None:
+        """Sao tin được: số MCP tính (cùng công thức với bước lấy chỗ của MCP); tool không trả
+        (search_hotels, Vietmap…) thì Hoeffding."""
+        if self.rating_adjusted is not None:
+            return self.rating_adjusted
         return rating_floor(self.rating, self.reviews)
 
+    @property
+    def rating_trusted(self) -> bool:
+        """Sao tin được để nêu làm lý do chọn. Bayes: số review thật nhiều hơn số review ảo của
+        tiên nghiệm (dữ liệu thật quyết định điểm) và cao hơn sao tiên nghiệm (hơn mức chung của
+        cùng loại ở điểm đến). Hoeffding: từ TRUSTED_HOEFFDING."""
+        basis = self.rating_basis or {}
+        if self.rating_adjusted is not None and basis.get("method") == "bayes":
+            return self.reviews >= (basis.get("prior_reviews") or 0) and self.rating_adjusted > (
+                basis.get("prior_mean") or 0
+            )
+        return (self.rating_floor or 0) >= TRUSTED_HOEFFDING
 
+
+TRUSTED_HOEFFDING = 4.0  # tự đặt (từ trước): sao Hoeffding từ mức này thì nêu "tin được"
 BREAKFAST_WORDS = ("bữa sáng", "ăn sáng", "điểm tâm", "breakfast")
 
 

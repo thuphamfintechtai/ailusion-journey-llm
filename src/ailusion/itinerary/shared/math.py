@@ -1,6 +1,8 @@
 """Phép tính dùng chung, mỗi phép có nguồn:
 
-- `rating_floor`: số sao còn tin được — bất đẳng thức Hoeffding (1963), độ tin 95%.
+- `rating_floor`: số sao còn tin được — bất đẳng thức Hoeffding (1963), độ tin 95%. Chỉ dùng
+  khi tool không trả `rating_adjusted` (sao Bayes MCP tính theo tiên nghiệm của điểm đến × loại
+  hình, xem MCP src/services/rating_prior.py) — Place.rating_floor ưu tiên số của MCP.
 - `dominates` / `pareto_tiers`: không bị trội / chia tầng không bị trội (Deb 2002).
 - `km`: khoảng cách đường chim bay (haversine). `median`: trung vị.
 """

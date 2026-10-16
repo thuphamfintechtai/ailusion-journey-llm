@@ -140,6 +140,7 @@ def add_places(pool: dict[str, Place], result: Any, source: str, any_kind: bool 
             pool[pid] = place
         if not place.thumbnail and raw.get("thumbnail"):
             place.thumbnail = str(raw["thumbnail"])
+        set_rating_adjusted(place, raw)
         if place.price is None and price is not None:
             place.price, place.price_by = price, "tool"
             place.price_low, place.price_high = price_low, price_high
@@ -192,6 +193,15 @@ def add_stays(stays: dict[str, Place], result: Any, source: str) -> None:
             need_status=dict(raw.get("needs_status") or {}),
             source=source,
         )
+        set_rating_adjusted(stays[key], raw)
+
+
+def set_rating_adjusted(place: Place, raw: dict[str, Any]) -> None:
+    """Sao tin được MCP đã tính (`rating_adjusted` + `rating_basis`); lần sau có thì ghi đè."""
+    if raw.get("rating_adjusted") is not None:
+        place.rating_adjusted = float(raw["rating_adjusted"])
+        basis = raw.get("rating_basis")
+        place.rating_basis = dict(basis) if isinstance(basis, dict) else None
 
 
 def add_hours(pool: dict[str, Place], day: int, result: Any) -> None:

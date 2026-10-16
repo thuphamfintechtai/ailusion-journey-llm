@@ -22,7 +22,7 @@ Chia theo 5 làn của trang thiết kế "Pipeline lập lộ trình":
       context.py       Ctx: gọi tool, gọi LLM, ghi nhật ký
       tools.py         đọc kết quả tool MCP thành Place
       llm.py           trần token, tính tiền, kiểm câu trích / số tiền / con số
-      math.py          sao tin được (Hoeffding), không bị trội, khoảng cách, trung vị
+      math.py          sao tin được dự phòng (Hoeffding), không bị trội, khoảng cách, trung vị
     response.py      B17 ảnh, lý do chọn, kết quả trả về (JSON + dạng chữ cho chat)
 """
 

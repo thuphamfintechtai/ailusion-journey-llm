@@ -45,3 +45,55 @@ def test_gemini_safe_schema_moves_non_string_enum_into_description():
     assert items["description"] == "Giá trị hợp lệ: 2, 3, 4, 5."
     assert cleaned["properties"]["sort_by"]["enum"] == ["price", "rating"]
     assert "additionalProperties" not in cleaned
+
+
+def test_rating_floor_uses_mcp_bayes_and_falls_back_to_hoeffding() -> None:
+    from ailusion.itinerary.shared.math import rating_floor
+    from ailusion.itinerary.shared.tools import add_places
+
+    basis = {"method": "bayes", "prior_mean": 4.35, "prior_reviews": 14.1, "prior_level": "rieng"}
+    result = {
+        "status": "success",
+        "places": [
+            # MCP đã tính sao Bayes (bước lấy chỗ và bước chấm cùng một số).
+            {
+                "place_id": "a",
+                "name": "Quán A",
+                "category": "Quán cà phê",
+                "lat": 11.9,
+                "lng": 108.4,
+                "rating": 4.8,
+                "reviews": 40,
+                "rating_adjusted": 4.683,
+                "rating_basis": basis,
+            },
+            # 5★ / 5 review: Bayes cao nhưng ít review hơn số review ảo -> chưa "tin được".
+            {
+                "place_id": "b",
+                "name": "Quán B",
+                "category": "Quán cà phê",
+                "lat": 11.9,
+                "lng": 108.4,
+                "rating": 5.0,
+                "reviews": 5,
+                "rating_adjusted": 4.52,
+                "rating_basis": basis,
+            },
+            # Tool không trả sao Bayes (SerpApi khách sạn, Vietmap): Hoeffding như cũ.
+            {
+                "place_id": "c",
+                "name": "Bảo tàng C",
+                "category": "Bảo tàng",
+                "lat": 11.9,
+                "lng": 108.4,
+                "rating": 4.8,
+                "reviews": 40,
+            },
+        ],
+    }
+    pool: dict = {}
+    add_places(pool, result, "find_places")
+    a, b, c = pool["a"], pool["b"], pool["c"]
+    assert a.rating_floor == 4.683 and a.rating_trusted
+    assert b.rating_floor == 4.52 and not b.rating_trusted
+    assert c.rating_floor == rating_floor(4.8, 40) and c.rating_trusted  # 4,026 ≥ 4,0

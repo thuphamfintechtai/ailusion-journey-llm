@@ -849,7 +849,6 @@ def _day(
 
 SUMMARY_CHARS = 220
 NEAR_MIN = 10  # đi từ điểm trước tới đây không quá ngần này phút thì nêu là "gần"
-TRUSTED_FLOOR = 4.0  # sao tin được (Hoeffding) từ mức này thì nêu là lý do chọn
 CHEAP_SHARE = 0.15  # giá ≤ 15% ngân sách mỗi người mỗi ngày thì nêu là "nhẹ"
 OUTLIER_KM = 5  # chỗ xa nhất cách chỗ ở từ ngần này km và ≥ 2 lần chỗ xa thứ hai thì giải thích
 
@@ -957,7 +956,7 @@ def why_of(
         out.append(f"Đúng thứ bạn nhắc: {p.wanted}")
     if reason := purpose_reason(p):
         out.append(reason)
-    if p.rating is not None and (p.rating_floor or 0) >= TRUSTED_FLOOR:
+    if p.rating is not None and p.rating_trusted:
         out.append(f"{p.rating:.1f}★ tin được, {_count(p.reviews)} đánh giá")
     if stop.travel <= NEAR_MIN:
         out.append(f"Cách {'chỗ ở' if first else 'điểm trước'} {stop.travel} phút")
@@ -978,7 +977,9 @@ def _far_reason(p: Place) -> str:
     parts = []
     if p.matches_purpose:
         parts.append("hợp mục đích chuyến")
-    if p.rating is not None and (p.rating_floor or 0) >= 4.3:
+    bayes = (p.rating_basis or {}).get("method") == "bayes"
+    # Bayes: tin được (đủ review, hơn mức chung cùng loại); Hoeffding: từ 4,3 (tự đặt, từ trước).
+    if p.rating is not None and (p.rating_trusted if bayes else (p.rating_floor or 0) >= 4.3):
         parts.append(f"được đánh giá cao ({p.rating:.1f}★, {_count(p.reviews)} đánh giá)")
     elif p.reviews >= 5000:
         parts.append(f"rất nổi tiếng ({_count(p.reviews)} đánh giá)")
