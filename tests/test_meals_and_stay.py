@@ -550,3 +550,25 @@ def test_short_last_day_never_eats_two_meals_too_close_to_get_back_earlier():
     breakfast, lunch = run.stops[0], run.stops[2]
     assert lunch.start - breakfast.start == 150  # 08:56 + 150 = 11:26
     assert not [i for i in run.issues if "chỉ cách bữa trước" in i]
+
+
+def test_cached_simulation_returns_copies_that_callers_can_change():
+    """Trong 1 lượt kiem_lich, lịch y hệt chỉ chạy thử 1 lần (nhớ kết quả); check_plan chèn lỗi
+    vào kết quả trả về không được làm hỏng bản đã nhớ."""
+    from ailusion.itinerary.coordinator import simulate as S
+    from ailusion.itinerary.shared.models import STAY, Place
+
+    places = {"v": Place("v", "v", "Bảo tàng", "visit", 16.0, 108.2, stay_low=60)}
+    m = {(STAY, "v"): 10, ("v", STAY): 10}
+    w = DayWindow(day=1, day_start="08:00", day_end="20:00", free_minutes=720)
+    plan = DayPlan(id="L", day=1, leave_stay="08:00", stops=["v"])
+    token = S._RUNS.set({})
+    try:
+        first = S.simulate(plan, places, m, w, [], False)
+        first.issues.insert(0, "lỗi người gọi tự thêm")
+        again = S.simulate(plan, places, m, w, [], False)
+        assert "lỗi người gọi tự thêm" not in again.issues
+        assert len(S._RUNS.get()) == 1  # chạy thật 1 lần, lần sau lấy bản đã nhớ
+    finally:
+        S._RUNS.reset(token)
+    assert S._RUNS.get() is None  # ngoài kiem_lich: không nhớ

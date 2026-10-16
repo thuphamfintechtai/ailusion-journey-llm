@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import heapq
 import math
 from itertools import combinations, permutations
@@ -581,13 +582,12 @@ def place_meals(
         # Trần theo từng bộ quán: không thì bộ đầu đã chạm trần, bộ có quán bù bữa không được thử.
         candidates += _insertions(visits, chosen)[:MAX_ORDERINGS_PER_SET]
 
-    def score(stops: list[str]) -> tuple[int, ...]:
+    def head(stops: list[str]) -> tuple[tuple[int, ...], int]:
         """Ít lỗi giờ ăn -> ít lỗi khác -> ít bỏ quán Planner chọn -> ít thêm quán -> ít bữa cùng
-        loại món -> ít lỗi giờ ăn khi ở lâu -> về sớm. Bỏ quán là cách cuối cùng, không phải để về
-        sớm hơn."""
+        loại món; sau đó (vòng 2) ít lỗi giờ ăn khi ở lâu -> về sớm. Bỏ quán là cách cuối cùng,
+        không phải để về sớm hơn. Trả (5 tiêu chí đầu, giờ về)."""
         trial = DayPlan(id=plan.id, day=plan.day, leave_stay=plan.leave_stay, stops=stops)
         run = simulate(trial, places, matrix, window, [], long_stay=False)
-        long = simulate(trial, places, matrix, window, [], long_stay=True)
         dropped = sum(m not in stops for m in meals)
         added = sum(m not in meals for m in stops if places[m].kind == "meal")
         kinds = [places[m].group for m in stops if places[m].kind == "meal"]
@@ -598,11 +598,19 @@ def place_meals(
             dropped,
             added,
             len(kinds) - len(set(kinds)),
-            sum(map(is_meal_issue, long.issues)),
-            run.back,
-        )
+        ), run.back
 
-    best = min(candidates or [plan.stops], key=score)
+    def long_meal_issues(stops: list[str]) -> int:
+        trial = DayPlan(id=plan.id, day=plan.day, leave_stay=plan.leave_stay, stops=stops)
+        return sum(map(is_meal_issue, simulate(trial, places, matrix, window, [], True).issues))
+
+    # Vòng 2 (chạy thử ở lâu) chỉ cho các cách hoà nhau ở mọi tiêu chí trước: cùng kết quả với
+    # chấm đủ một lượt, mà bớt gần nửa số lần chạy thử.
+    pool = candidates or [plan.stops]
+    heads = [head(c) for c in pool]
+    top = min(h for h, _ in heads)
+    ties = [(c, back) for c, (h, back) in zip(pool, heads, strict=True) if h == top]
+    best = min(ties, key=lambda t: (long_meal_issues(t[0]), t[1]))[0]
     changed = best != plan.stops
     plan.stops = best
     return changed
@@ -659,7 +667,42 @@ def _slots(text_slots: list[str]) -> list[tuple[int, int]]:
     return out
 
 
+# Kết quả chạy thử trong 1 lượt kiem_lich (cùng places, ma trận, khung ngày): đặt quán, sắp thứ
+# tự, bù chỗ, bỏ bớt thử lại nhiều lịch y hệt nhau (đo trên chuyến Huế: 39% lượt chạy thử là lặp).
+# Mỗi nhánh có bộ nhớ riêng (contextvars theo task); đầy thì xoá cho nhẹ RAM.
+_RUNS: contextvars.ContextVar[dict[tuple, Run] | None] = contextvars.ContextVar(
+    "_RUNS", default=None
+)
+MAX_CACHED_RUNS = 20_000
+
+
+def _copy_run(run: Run) -> Run:
+    """Bản sao để người gọi sửa (check_plan chèn lỗi vào `issues`) không làm hỏng bản đã nhớ."""
+    return Run(list(run.stops), run.back, list(run.issues), list(run.unchecked), run.rest)
+
+
 def simulate(
+    plan: DayPlan,
+    places: dict[str, Place],
+    matrix: dict[tuple[str, str], float],
+    window: DayWindow,
+    required_needs: list[str],
+    long_stay: bool,
+) -> Run:
+    """Chạy dòng thời gian 1 lần (xem `_simulate`); trong kiem_lich thì nhớ kết quả theo lịch."""
+    cache = _RUNS.get()
+    if cache is None:
+        return _simulate(plan, places, matrix, window, required_needs, long_stay)
+    key = (plan.day, plan.leave_stay, tuple(plan.stops), long_stay, tuple(required_needs))
+    run = cache.get(key)
+    if run is None:
+        if len(cache) >= MAX_CACHED_RUNS:
+            cache.clear()
+        run = cache[key] = _simulate(plan, places, matrix, window, required_needs, long_stay)
+    return _copy_run(run)
+
+
+def _simulate(
     plan: DayPlan,
     places: dict[str, Place],
     matrix: dict[tuple[str, str], float],
@@ -1036,6 +1079,14 @@ def meals_by_day(state: dict, places: dict[str, Place]) -> dict[int, list[str]]:
 
 
 async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
+    token = _RUNS.set({})
+    try:
+        return await _kiem_lich(state, ctx)
+    finally:
+        _RUNS.reset(token)
+
+
+async def _kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
     form, profile, places = form_of(state), profile_of(state), places_of(state)
     matrix = matrix_of(state)
     windows = {d.day: d for d in profile.days}

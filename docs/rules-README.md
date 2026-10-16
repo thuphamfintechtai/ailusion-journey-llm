@@ -238,6 +238,7 @@ Xem [planner-README.md](planner-README.md): luật 1–10 trong prompt, `plan_er
 | Bỏ bớt (`trim_visits`) | lỗi "quá giờ kết thúc / phải chờ / đóng cửa lúc / chạm giờ bận" (`OVERFULL`) → bỏ tối đa `MAX_TRIMS` 3 chỗ chơi (không bỏ chỗ user chọn và thứ user nhắc), ghi "Bỏ X: không đủ thời gian trong ngày" |
 | Nghỉ trưa | tự chèn sau bữa trưa ở ngày dài (mục 3) |
 | Trạng thái | `fail` lỗi khi ở ít · `risky` lỗi khi ở lâu · `warn` vượt tiền nên tiêu mỗi ngày · `ok` |
+| Tốc độ | `place_meals` chấm 2 vòng: chạy thử ở ít mọi cách xếp, ở lâu chỉ cho các cách đang hoà (cùng kết quả); trong 1 lượt `kiem_lich` nhớ kết quả chạy thử theo lịch (`MAX_CACHED_RUNS` 20.000, trả bản sao). Chuyến Huế 16/10: cả chuyến 340 → 123 giây (BE chờ tối đa `LLM_PLAN_TIMEOUT` 300 giây) |
 | Lỗi cứng khác | chưa có chỗ ngủ đêm đó; thiếu chỗ user chọn; ngày không còn chỗ hợp lệ; rời chỗ ở sớm hơn giờ bắt đầu; thiếu nhu cầu bắt buộc |
 
 ## 13. Xếp hạng và ghép phương án
