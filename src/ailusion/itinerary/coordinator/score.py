@@ -100,6 +100,9 @@ def fill_price_estimates(places: dict[str, Place]) -> None:
     for p in places.values():
         if p.price is not None and not (p.price_by or "").startswith("ước"):
             known.setdefault("meal" if p.kind == "meal" else p.group, []).append(float(p.price))
+    # Chỗ chơi không khớp loại nào: trung vị giá thật của mọi chỗ chơi trong chuyến (dữ liệu của
+    # chính điểm đến) trước khi dùng số tự đặt VISIT_PRICE.
+    visit_prices = [v for k, vs in known.items() if k != "meal" for v in vs]
     for p in places.values():
         if p.price is not None:
             continue
@@ -109,10 +112,12 @@ def fill_price_estimates(places: dict[str, Place]) -> None:
         elif p.kind == "meal":
             p.price, p.price_by = MEAL_PRICE, "ước theo loại"
         else:
-            p.price = next(
-                (v for words, v in PRICE_BY_TYPE if any(w in p.text for w in words)), VISIT_PRICE
-            )
-            p.price_by = "ước theo loại"
+            typed = next((v for words, v in PRICE_BY_TYPE if any(w in p.text for w in words)), None)
+            if typed is None and len(visit_prices) >= MIN_SAME_TYPE_PRICES:
+                p.price, p.price_by = int(median(visit_prices) or 0), "ước theo chỗ chơi khác"
+            else:
+                p.price = VISIT_PRICE if typed is None else typed
+                p.price_by = "ước theo loại"
 
 
 def fill_stay_estimate(place: Place) -> None:
@@ -446,6 +451,15 @@ STAY_BUDGET_SHARE = 0.5
 # Tiền phòng cả chuyến nên khoảng ngần này phần ngân sách (phần còn lại cho ăn, chơi, đi lại).
 # Số tạm ("tu_dat"); nên thay bằng tỉ lệ thật từ các chuyến user đã chọn.
 STAY_TARGET_SHARE = 0.35
+
+
+def stay_target_share(form: Any) -> float:
+    """Phần ngân sách nhắm cho chỗ ở: "sang nhưng trong ngân sách" nhắm tới trần
+    STAY_BUDGET_SHARE (chỗ ở tốt nhất mà cả chuyến vẫn không vượt ngân sách), còn lại
+    STAY_TARGET_SHARE."""
+    return STAY_BUDGET_SHARE if form.spend_style == "luxury_within_budget" else STAY_TARGET_SHARE
+
+
 STAY_PRICE_PICKS = 8  # chỗ ở giá sát mục tiêu nhất đem so phút đi tới các điểm chơi
 STAY_PRICE_SLACK = 0.25  # lệch giá thêm tối đa ngần này (phần của mục tiêu) để được chỗ gần hơn
 STAY_RIDE_VISITS = 12  # số điểm chơi nổi bật đem đo phút đi từ chỗ ở
@@ -580,7 +594,7 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
         # toàn chỗ rẻ, ngân sách 8 triệu lại chọn phòng 390 nghìn/đêm.
         priced = [x for x in usable if x.price]
         if budget and form.spend_style != "unlimited" and priced:
-            target = budget * STAY_TARGET_SHARE
+            target = budget * stay_target_share(form)
             nights = max(1, form.num_nights)
 
             def gap(x: Place) -> float:

@@ -17,7 +17,7 @@ import math
 from typing import Any
 
 from .shared.fares import OTHER_CITY, car_leg_price, car_leg_range
-from .shared.form import TripForm
+from .shared.form import EXTRA_PCT, TripForm
 from .shared.math import km
 from .shared.models import CATEGORY_GROUPS
 
@@ -90,12 +90,26 @@ def leg_range(
     night: bool = False,
 ) -> tuple[int, int] | None:
     """(thấp, cao) tiền đi một chặng cho cả đoàn, làm tròn nghìn; không rõ phương tiện / km thì
-    None. Gọi xe: hãng rẻ nhất / đắt nhất cùng cỡ xe; tự lái tính theo ngày nên None."""
+    None. Gọi xe: hãng rẻ nhất / đắt nhất cùng cỡ xe; xe buýt / đi bộ: `bus_leg`; tự lái tính
+    theo ngày nên None."""
     if distance is None:
         return None
     if mode == "taxi":
         return car_leg_range(distance, minutes, group_size, city, night)
+    if mode == "bus":
+        fare = bus_leg(distance, group_size)
+        return fare, fare
     return None  # tự lái: tính theo ngày (`rental_of`), không theo chặng
+
+
+# Xe buýt trong thành phố: giá vé 1 lượt mỗi người — số tạm (tu_dat, giá vé buýt nội thành phổ
+# biến 7.000–10.000 đ). Chặng ngắn (≤ WALK_MAX_KM) thì đi bộ, 0 đ.
+BUS_FARE = 8_000
+
+
+def bus_leg(distance: float, group_size: int) -> int:
+    """Tiền một chặng "xe buýt, đi bộ" cho cả đoàn: gần thì đi bộ, xa thì 1 vé buýt mỗi người."""
+    return 0 if distance <= WALK_MAX_KM else BUS_FARE * group_size
 
 
 def leg_cost(
@@ -109,12 +123,14 @@ def leg_cost(
     """Tiền đi một chặng cho cả đoàn, làm tròn nghìn; không rõ phương tiện / km thì None.
 
     Gọi xe (taxi): trung bình giá các hãng trong `shared/fares.py` theo thành phố và cỡ xe;
-    tự lái tính theo ngày (thuê + xăng, `rental_of`) nên None.
+    xe buýt / đi bộ: `bus_leg`; tự lái tính theo ngày (thuê + xăng, `rental_of`) nên None.
     """
     if distance is None:
         return None
     if mode == "taxi":
         return car_leg_price(distance, minutes, group_size, city, night)
+    if mode == "bus":
+        return bus_leg(distance, group_size)
     return None  # tự lái: tính theo ngày (`rental_of`), không theo chặng
 
 
@@ -179,10 +195,9 @@ def price_range(price: int | None, price_by: str | None) -> tuple[int | None, in
     return low, math.ceil(price * (1 + ESTIMATE_SPREAD) / 1000) * 1000
 
 
-# Chi phí phát sinh: không tính trước được từng khoản (thuế, mưa làm giá xe tăng, hư xe, gửi xe,
-# nước, ăn vặt...), nên để dành theo % tiền ở + vé + ăn + đi lại của ngày. Số tạm (tu_dat).
+# Chi phí phát sinh: % tiền ở + vé + ăn + đi lại của ngày — `EXTRA_PCT` (shared/form.py, cùng số
+# với bước ghép theo ngân sách và Planner).
 EXTRA_LABEL = "Chi phí phát sinh"
-EXTRA_PCT = (0.10, 0.15)
 EXTRA_PCT_RAIN = 0.05  # ngày có buổi mưa: thêm vào mức cao
 EXTRA_PCT_PEAK = 0.05  # lễ / cao điểm: thêm vào mức cao
 EXTRA_PCT_CAP = 0.25

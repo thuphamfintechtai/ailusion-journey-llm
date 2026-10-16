@@ -92,10 +92,31 @@ def test_days_spend_evenly_and_options_differ() -> None:
 
 
 def test_not_enough_places_to_spend_the_budget_is_said_plainly() -> None:
-    note = budget_note(2_000_000, 5_000_000)
+    note = budget_note(2_000_000, _form())
     assert note and "thấp hơn ngân sách" in note and "60%" in note
-    assert budget_note(5_100_000, 5_000_000) is None  # trong ±5%: không nói gì
-    assert "vượt" in (budget_note(10_000_000, 7_000_000) or "")
+    assert budget_note(5_100_000, _form()) is None  # trong ±5%: không nói gì
+    assert "vượt" in (budget_note(10_000_000, _form(budget=7_000_000)) or "")
+    # Vé đi về đã mua: ngân sách đã trừ vé, tổng ước còn vé -> so phải bỏ vé ra (không tính 2 lần).
+    paid = _form(budget=6_000_000, prepaid_tickets=500_000)  # 2 người: ngân sách còn 5 triệu
+    assert budget_note(6_000_000, paid) is None
+
+
+def test_budget_range_and_luxury_within_budget() -> None:
+    from ailusion.itinerary.shared.form import budget_band, trip_budget
+
+    # Khoảng user chọn (câu hỏi H3): 3–6 triệu -> bám khoảng, mốc giữa khoảng.
+    ranged = _form(budget=6_000_000, budget_min=3_000_000)
+    assert budget_band(ranged) == (3_000_000, 6_000_000) and trip_budget(ranged) == 4_500_000
+    assert budget_note(5_900_000, ranged) is None
+    assert "thấp hơn mức dưới" in (budget_note(2_000_000, ranged) or "")
+    # "Trên 10 triệu": không trần.
+    above = _form(budget=None, budget_min=10_000_000)
+    assert budget_band(above) == (10_000_000, None) and budget_note(30_000_000, above) is None
+    # "Sang nhưng trong ngân sách": không được vượt, kể cả +5%.
+    lux = _form(spend_style="luxury_within_budget")
+    assert budget_band(lux) == (4_750_000, 5_000_000)
+    assert "vượt" in (budget_note(5_200_000, lux) or "")
+    assert budget_note(5_200_000, _form()) is None
 
 
 def test_planner_gets_an_even_daily_target() -> None:
@@ -174,3 +195,108 @@ def test_planner_may_not_just_reorder_the_same_places() -> None:
         None,
         few,
     )
+
+
+def test_money_notes_explain_estimates_and_suggest_upgrades() -> None:
+    from ailusion.itinerary.coordinator.rank import money_notes
+    from ailusion.itinerary.coordinator.score import fill_price_estimates
+    from ailusion.itinerary.shared.models import place_to_dict
+
+    def place(pid, kind="visit", price=None, by=None, reviews=100, cat=None):
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat or f"Loại {pid}",
+            kind=kind,
+            lat=15.88,
+            lng=108.33,
+            price=price,
+            price_by=by,
+            reviews=reviews,
+        )
+
+    # Chỗ chơi không rõ loại: ước theo giá thật các chỗ chơi khác của chuyến, không phải 100k.
+    pool = {
+        "a": place("a", price=200_000, by="tool"),
+        "b": place("b", price=300_000, by="tool"),
+        "x": place("x"),
+    }
+    fill_price_estimates(pool)
+    assert pool["x"].price == 250_000 and pool["x"].price_by == "ước theo chỗ chơi khác"
+
+    form = _form(budget=20_000_000)  # 2 người 3 ngày, tiêu ít hơn nhiều
+    profile = profile_trip(form, [600_000], [100_000])
+    places = {
+        "v": place("v", price=100_000, by="ước theo loại"),
+        "show": place("show", price=600_000, by="tool", reviews=5000),
+    }
+    stay = Place(
+        place_id="s1",
+        name="Nhà nghỉ",
+        category="Khách sạn",
+        kind="stay",
+        lat=15.88,
+        lng=108.33,
+        price=500_000,
+    )
+    better = Place(
+        place_id="s2",
+        name="Resort Sông Hoài",
+        category="Khách sạn",
+        kind="stay",
+        lat=15.88,
+        lng=108.33,
+        price=2_000_000,
+        rating=4.8,
+        reviews=900,
+    )
+    state = {
+        "places": {k: place_to_dict(v) for k, v in places.items()},
+        "stay": place_to_dict(stay),
+        "stays": {"a": place_to_dict(stay), "b": place_to_dict(better)},
+    }
+    best = {"days": [_plan(1, "L", 1_000_000, ["v"])], "estimate": 8_000_000}
+    notes = " ".join(money_notes(state, best, form, profile))
+    assert "giá ước" in notes
+    assert "Resort Sông Hoài" in notes and "show" in notes
+    # Ngân sách dưới mức chi tối thiểu của điểm đến: nói rõ.
+    poor = _form(budget=500_000)
+    assert "thấp hơn mức chi tối thiểu" in " ".join(
+        money_notes(state, None, poor, profile_trip(poor, [600_000], [100_000]))
+    )
+
+
+def test_day_over_budget_compares_full_day_spend_with_planner_target() -> None:
+    from ailusion.itinerary.coordinator.simulate import check_plan
+    from ailusion.itinerary.shared.form import day_allowance
+    from ailusion.itinerary.shared.models import STAY, DayWindow
+
+    form = _form(budget=3_000_000, travel_mode="taxi")
+    profile = profile_trip(form, [], [])
+    # Planner và bước chạy thử cùng 1 số: (3tr ÷ 1,125 − tiền phòng) ÷ 3 ngày.
+    allowance = day_allowance(form, profile.trip_budget, 300_000)
+    assert allowance == day_target(
+        {
+            "form": form.model_dump(mode="json"),
+            "profile": profile.model_dump(),
+            "stay": {"price": 300_000},
+        }
+    )
+    pricey = Place(
+        place_id="p",
+        name="p",
+        category="Công viên giải trí",
+        kind="visit",
+        lat=15.88,
+        lng=108.33,
+        price=700_000,
+        stay_low=60,
+        stay_high=60,
+    )
+    places = {"p": pricey}
+    m = {("p", STAY): 10.0, (STAY, "p"): 10.0}
+    # Buổi chiều ngắn (không bữa bắt buộc) để chỉ còn luật tiền.
+    w = DayWindow(day=1, day_start="14:00", day_end="17:00", free_minutes=180)
+    plan = DayPlan(id="L", day=1, leave_stay="14:00", stops=["p"])
+    check_plan(plan, places, m, w, profile, form, allowance=allowance)
+    assert any("vượt ngân sách ngày" in i for i in plan.issues)

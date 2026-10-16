@@ -141,7 +141,8 @@ def test_leg_cost_by_mode() -> None:
     assert leg_cost(40, "taxi", 4) < 4 * leg_cost(10, "taxi", 4)  # qua mốc km thì rẻ hơn
     # Tự lái không tính theo chặng: tiền thuê + xăng tính theo ngày (`rental_of`).
     assert leg_cost(10, "motorbike", 3) is None and leg_cost(10, "car", 4) is None
-    assert leg_cost(10, "bus", 4) is None
+    # Xe buýt, đi bộ: chặng xa 1 vé buýt mỗi người (BUS_FARE, tự đặt), chặng ngắn đi bộ 0 đ.
+    assert leg_cost(10, "bus", 4) == 4 * 8_000 and leg_cost(1.5, "bus", 4) == 0
     assert leg_cost(10, None, 4) is None
     assert leg_cost(None, "taxi", 4) is None
 
@@ -154,7 +155,7 @@ def test_leg_range_by_mode() -> None:
     assert (low, high) == (233_000, 322_000)  # 1 xe 7 chỗ + 1 xe 4 chỗ (Grab + 2.000 phí)
     assert low <= leg_cost(10, "taxi", 9) <= high  # type: ignore[operator]
     assert leg_range(10, "motorbike", 3) is None and leg_range(10, "car", 8) is None
-    assert leg_range(10, "bus", 4) is None and leg_range(None, "taxi", 4) is None
+    assert leg_range(10, "bus", 4) == (32_000, 32_000) and leg_range(None, "taxi", 4) is None
 
 
 def test_price_range() -> None:

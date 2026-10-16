@@ -263,6 +263,10 @@ class TripForm(BaseModel):
     end_date: date
     group_size: int = Field(ge=1, le=30)
     budget: int | None = Field(None, ge=0, description="VND")
+    # Mức dưới của ngân sách (cùng đơn vị `budget_unit`): user chọn khoảng ("3–6 triệu", "trên 10
+    # triệu" ở câu hỏi H3) thì ngân sách là khoảng budget_min–budget (budget trống = không trần),
+    # thay vì ±BUDGET_BAND quanh một số user không nói.
+    budget_min: int | None = Field(None, ge=0, description="VND")
     budget_unit: BudgetUnit = "group_trip"
     stay_booked: str | None = None
     prepaid_tickets: int = Field(0, ge=0, description="Tiền vé đi về đã mua, mỗi người")
@@ -346,29 +350,80 @@ def clock(value: str | None) -> str | None:
     return BUCKET_TIMES.get(value, value)
 
 
-def daily_budget(form: TripForm) -> int | None:
-    """Ngân sách 1 người 1 ngày, theo cách user nhập (bảng bước 2)."""
-    if not form.budget:
-        return None
+# Luật lịch dùng chung cho bước chạy thử (coordinator/simulate.py) và prompt Planner, để prompt nói
+# đúng số code kiểm:
+LONG_WAIT_MAX = 45  # tới một chỗ phải chờ mở cửa / chờ giờ ăn quá ngần này phút là lỗi
+DINNER_FREE_MAX = 150  # bữa tối là điểm cuối ngày: trống trước đó tối đa ngần này phút (tự do)
+MIN_VISITS = 2  # ngày dài (rảnh ≥ FULL_DAY_MIN phút) ít nhất ngần này chỗ chơi, thiếu thì code bù
+FULL_DAY_MIN = 360
+
+# Tổng ước lệch ngân sách tối đa ±BUDGET_BAND (user yêu cầu) khi user nhập 1 con số.
+BUDGET_BAND = 0.05
+# Chi phí phát sinh: không tính trước được từng khoản (thuế, mưa làm giá xe tăng, gửi xe, nước,
+# ăn vặt...), để dành theo % tiền ở + vé + ăn + đi lại. Số tạm (tu_dat). Ghép phương án theo ngân
+# sách và Planner dùng số giữa `EXTRA_MID`; tab Chi phí hiện đủ khoảng (tabs.extra_pct).
+EXTRA_PCT = (0.10, 0.15)
+EXTRA_MID = sum(EXTRA_PCT) / 2
+
+
+def _to_trip(form: TripForm, value: int) -> int:
+    """Một mức tiền theo đơn vị user nhập -> cả đoàn cả chuyến (trừ vé đã mua)."""
     n, d = form.group_size, form.num_days
     if form.budget_unit == "group_trip":
-        return int((form.budget - form.prepaid_tickets * n) / n / d)
+        return int(value - form.prepaid_tickets * n)
     if form.budget_unit == "person_trip":
-        return int((form.budget - form.prepaid_tickets) / d)
-    return form.budget
+        return int((value - form.prepaid_tickets) * n)
+    return int(value * n * d)
+
+
+def budget_band(form: TripForm) -> tuple[int | None, int | None] | None:
+    """(thấp, cao) ngân sách cả đoàn cả chuyến mà tổng ước phải nằm trong; None = không có ngân
+    sách. User chọn khoảng (`budget_min`) thì đúng khoảng đó (thiếu cao = không trần, thấp 0 =
+    không sàn); "sang nhưng trong ngân sách" thì không được vượt (cao = ngân sách); còn lại
+    ±BUDGET_BAND quanh ngân sách."""
+    if form.budget_min is not None:
+        low = _to_trip(form, form.budget_min) if form.budget_min > 0 else None
+        high = _to_trip(form, form.budget) if form.budget else None
+        return (low, high) if low or high else None
+    if not form.budget:
+        return None
+    b = _to_trip(form, form.budget)
+    if form.spend_style == "luxury_within_budget":
+        return int(b * (1 - BUDGET_BAND)), b
+    return int(b * (1 - BUDGET_BAND)), int(b * (1 + BUDGET_BAND))
 
 
 def trip_budget(form: TripForm) -> int | None:
-    """Ngân sách cả đoàn cả chuyến (trừ vé đã mua). Tính thẳng, không qua số mỗi người mỗi ngày
-    (chia rồi nhân lại thì 8 triệu thành 7.999.998 đ)."""
+    """Ngân sách cả đoàn cả chuyến làm MỐC (chia tiền phòng, tiền mỗi ngày): số user nhập; user
+    chọn khoảng thì giữa khoảng (không sàn thì mức trần, không trần thì mức sàn). Tính thẳng,
+    không qua số mỗi người mỗi ngày (chia rồi nhân lại thì 8 triệu thành 7.999.998 đ)."""
+    if form.budget_min is not None:
+        band = budget_band(form)
+        if band is None:
+            return None
+        low, high = band
+        return (low + high) // 2 if low and high else (high or low)
     if not form.budget:
         return None
-    n, d = form.group_size, form.num_days
-    if form.budget_unit == "group_trip":
-        return int(form.budget - form.prepaid_tickets * n)
-    if form.budget_unit == "person_trip":
-        return int((form.budget - form.prepaid_tickets) * n)
-    return int(form.budget * n * d)
+    return _to_trip(form, form.budget)
+
+
+def daily_budget(form: TripForm) -> int | None:
+    """Ngân sách 1 người 1 ngày (theo mốc `trip_budget`)."""
+    total = trip_budget(form)
+    return int(total / form.group_size / form.num_days) if total else None
+
+
+def day_allowance(form: TripForm, trip_total: int | None, stay_price: int | None) -> int | None:
+    """Tiền nên tiêu mỗi ngày cho cả đoàn — vé + ăn + đi lại (đúng phần `day_spend` đo), chưa
+    gồm chỗ ở và phát sinh: (ngân sách ÷ (1 + phát sinh) − tiền phòng) ÷ số ngày. Planner nhận số
+    này, bước chạy thử so lịch với số này. Không có ngân sách / "không giới hạn" thì None."""
+    if not trip_total or form.spend_style == "unlimited":
+        return None
+    rooms = -(-form.group_size // 2)
+    stay_total = (stay_price or 0) * form.num_nights * rooms if not form.stay_booked else 0
+    rest = trip_total / (1 + EXTRA_MID) - stay_total
+    return int(round(max(0.0, rest) / form.num_days / 1000) * 1000) or None
 
 
 def money(v: Any) -> str:

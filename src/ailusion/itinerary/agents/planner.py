@@ -16,10 +16,14 @@ from pydantic import BaseModel, Field
 
 from ..shared.context import Ctx
 from ..shared.form import (
+    DINNER_FREE_MAX,
     GROUP_NAMES,
+    LONG_WAIT_MAX,
+    MIN_VISITS,
     MUST_LATE_MAX,
     NAP_MIN,
     PURPOSE_NAMES,
+    day_allowance,
     hhmm,
     must_time_text,
     required_meals,
@@ -49,14 +53,11 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày; không chạm khung bị chặn. Khung "chỉ ăn uống" chỉ được xếp quán Q….
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
 5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau.
-6. Bữa ăn: dòng "Ngày …" ghi bữa BẮT BUỘC của ngày (và bữa tuỳ chọn / không xếp) — tính sẵn theo giờ bắt đầu ngày: bắt đầu ≤ 08:00 đủ sáng + trưa + tối, bữa sáng là quán Q… ĐẦU TIÊN gần chỗ ở; bắt đầu 08:00–11:00 bữa sáng tuỳ chọn; sau 11:00 không bữa sáng; sau 13:00 không ép bữa trưa. Giờ ăn: trưa khoảng 11:30–13:00 (dịch tối đa 1 tiếng), tối 18:00–20:00. Mỗi bữa 1 quán Q… chèn đúng chỗ trong `stops`, giữa 2 bữa là chỗ chơi (không xếp 2 quán liền nhau, 2 bữa cách nhau ít nhất 2,5 tiếng — tốt nhất 3–4 tiếng; mọi chỗ bán đồ ăn, kể cả loại "khu ăn uống", "ăn vặt", đều tính là 1 bữa); quán loại "bữa sáng" chỉ làm bữa sáng; thiếu bữa bắt buộc là lỗi. `leave_stay` = giờ bắt đầu ngày (không sớm hơn).
-   Ngày kéo tới tối: lịch phải có chỗ chơi buổi sáng VÀ buổi chiều (sau bữa trưa / nghỉ trưa) rồi mới tới bữa tối — không kết thúc ngày sau bữa trưa. Không nhồi quá (khoảng 4–6 chỗ chơi một ngày dài). Spa, massage, xông hơi xếp buổi chiều / tối (từ 13:00), không đi sáng sớm trước bữa sáng.
-
-11. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày nên có mức tiền khác nhau quanh con số đó (một lịch thấp hơn, một lịch sát, một lịch cao hơn một chút), để hệ thống ghép được cả chuyến sát ngân sách user đưa. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
-
-12. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong mỗi phương án (rải ra vài ngày), nhưng MỖI NGÀY TỐI ĐA 1 BỮA cho cùng một món (không ăn bún bò cả sáng lẫn trưa); quán thì vào đúng bữa trưa / tối, ngày vẫn phải có chỗ đi chơi.
-
-13. Ngày ghi "nghỉ trưa": sau bữa trưa hệ thống tự chèn 90 phút nghỉ (chỗ ở / quán cà phê / khách sạn gần đó) (không cần ghi vào `stops`). Buổi chiều sau đó tới bữa tối PHẢI có chỗ chơi: không để trống — tới quán tối sớm quá 45 phút là lỗi. "rảnh … phút" đã trừ giờ nghỉ trưa.
+6. Bữa ăn: dòng "Ngày …" ghi bữa BẮT BUỘC của ngày (và bữa tuỳ chọn / không xếp), tính sẵn theo giờ bắt đầu ngày. Mỗi bữa bắt buộc 1 quán Q… trong `stops`, đặt gần đúng chỗ (bữa sáng đầu ngày nếu có, trưa giữa ngày, tối cuối ngày) — hệ thống tự dời quán vào đúng giờ ăn và bỏ quán thừa / sai giờ. Giữa 2 bữa là chỗ chơi, không xếp 2 quán liền nhau; mọi chỗ bán đồ ăn (kể cả "khu ăn uống", "ăn vặt") tính là 1 bữa; quán loại "bữa sáng" chỉ làm bữa sáng; thiếu bữa bắt buộc là lỗi. `leave_stay` = giờ bắt đầu ngày.
+7. Ngày kéo tới tối: có chỗ chơi buổi sáng VÀ buổi chiều (sau bữa trưa / nghỉ trưa) rồi mới tới bữa tối — không kết thúc ngày sau bữa trưa; ngày dài ít nhất {min_visits} chỗ chơi. Đừng nhồi tới mức về trễ: lịch quá dài hệ thống bỏ bớt chỗ. Spa, massage, xông hơi xếp buổi chiều / tối (từ 13:00). Chỗ ghi "đi buổi tối" (show, chợ đêm, bar…) xếp sau bữa tối nếu còn mở.
+8. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày có mức tiền khác nhau quanh con số đó — một lịch thấp hơn, một lịch cao hơn một chút (lịch thứ 3 nếu có thì sát con số), để hệ thống ghép được cả chuyến sát ngân sách. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
+9. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong mỗi phương án (rải ra vài ngày), nhưng MỖI NGÀY TỐI ĐA 1 BỮA cho cùng một món; quán thì vào đúng bữa trưa / tối, ngày vẫn phải có chỗ đi chơi.
+10. Ngày ghi "nghỉ trưa": sau bữa trưa hệ thống tự chèn {nap} phút nghỉ (chỗ ở / quán cà phê / khách sạn gần đó), không ghi vào `stops`. Buổi chiều sau đó tới bữa tối PHẢI có chỗ chơi: tới một chỗ phải chờ quá {wait} phút là lỗi; riêng bữa tối là điểm cuối ngày thì được trống tối đa {dinner_free} phút trước đó (thời gian tự do). "rảnh … phút" đã trừ giờ nghỉ trưa.
 
 # Làm các lịch khác nhau thật sự
 
@@ -66,7 +67,14 @@ Khác nhau ở CHỖ CHƠI, không chỉ ở thứ tự hay quán ăn: 2 lịch 
 """
 
 
-PLANNER = PLANNER.replace("{must_late}", str(MUST_LATE_MAX))
+for key, value in {
+    "must_late": MUST_LATE_MAX,
+    "min_visits": MIN_VISITS,
+    "nap": NAP_MIN,
+    "wait": LONG_WAIT_MAX,
+    "dinner_free": DINNER_FREE_MAX,
+}.items():
+    PLANNER = PLANNER.replace("{" + key + "}", str(value))
 
 
 PLANNER_FIX = """
@@ -185,24 +193,11 @@ def hours_text(p: Place, day: int) -> str:
     return " + ".join(f"{hhmm(a)}–{hhmm(b)}" for a, b in zip(edges[::2], edges[1::2], strict=False))
 
 
-# = simulate.EXTRA_MID (số giữa của phát sinh 10–15%); không import để tránh vòng import.
-_EXTRA_MID = 0.125
-
-
 def day_target(state: dict[str, Any]) -> int | None:
-    """Tiền nên tiêu mỗi ngày cho cả đoàn (vé, ăn, đi lại; chưa gồm chỗ ở và phát sinh): phần
-    ngân sách còn lại sau tiền phòng, chia đều số ngày. Không có ngân sách / mức chi "không giới
-    hạn" thì None."""
+    """Tiền nên tiêu mỗi ngày cho cả đoàn (vé, ăn, đi lại; chưa gồm chỗ ở và phát sinh) —
+    shared/form.day_allowance, cùng số bước chạy thử dùng để đánh dấu vượt ngân sách ngày."""
     form, profile = form_of(state), profile_of(state)
-    if not profile.trip_budget or form.spend_style == "unlimited":
-        return None
-    stay = state.get("stay") or {}
-    rooms = -(-form.group_size // 2)
-    stay_total = (stay.get("price") or 0) * form.num_nights * rooms if not form.stay_booked else 0
-    rest = (
-        profile.trip_budget / (1 + _EXTRA_MID) - stay_total - form.prepaid_tickets * form.group_size
-    )
-    return int(round(max(0.0, rest) / form.num_days / 1000) * 1000) or None
+    return day_allowance(form, profile.trip_budget, (state.get("stay") or {}).get("price"))
 
 
 def must_codes_of(state: dict[str, Any]) -> dict[int, list[str]]:

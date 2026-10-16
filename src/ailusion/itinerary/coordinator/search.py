@@ -33,7 +33,7 @@ from ..shared.models import (
     wanted_words,
 )
 from ..shared.tools import add_places, add_stays, tool_ok
-from .score import STAY_TARGET_SHARE
+from .score import stay_target_share
 
 ENOUGH_VISITS = 6
 NEARBY_KM = 10
@@ -271,7 +271,7 @@ def stay_band_calls(
     if not trip_budget or not form.num_nights or form.stay_booked:
         return []
     rooms = -(-form.group_size // 2)
-    target = trip_budget * STAY_TARGET_SHARE / form.num_nights / rooms
+    target = trip_budget * stay_target_share(form) / form.num_nights / rooms
     return [
         (
             "find_stays",
