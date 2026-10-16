@@ -229,10 +229,21 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "text": "Ngân sách khoảng bao nhiêu cho cả đoàn?",
         "field": "budget",
         "choices": [
-            ["Dưới 3 triệu", {"budget": 3_000_000, "budget_unit": "group_trip"}],
-            ["3–6 triệu", {"budget": 6_000_000, "budget_unit": "group_trip"}],
-            ["6–10 triệu", {"budget": 10_000_000, "budget_unit": "group_trip"}],
-            ["Trên 10 triệu", {"budget": 15_000_000, "budget_unit": "group_trip"}],
+            # Khoảng user chọn là khoảng ngân sách (budget_min–budget), không gán 1 số user không
+            # nói rồi bám ±5% quanh nó ("Trên 10 triệu" từng thành đúng 15 triệu).
+            ["Dưới 3 triệu", {"budget": 3_000_000, "budget_min": 0, "budget_unit": "group_trip"}],
+            [
+                "3–6 triệu",
+                {"budget": 6_000_000, "budget_min": 3_000_000, "budget_unit": "group_trip"},
+            ],
+            [
+                "6–10 triệu",
+                {"budget": 10_000_000, "budget_min": 6_000_000, "budget_unit": "group_trip"},
+            ],
+            [
+                "Trên 10 triệu",
+                {"budget": None, "budget_min": 10_000_000, "budget_unit": "group_trip"},
+            ],
         ],
     },
     "H6": {
@@ -278,7 +289,7 @@ def questions_for(form: TripForm, profile: TripProfile) -> list[str]:
         out.append("H5")
     if profile.main_purpose == "adventure" and not form.walking_level:
         out.append("H4")
-    if not form.budget:
+    if not form.budget and not form.budget_min:
         out.append("H3")
     if form.num_days >= 3 and not form.purposes and not form.interests.strip():
         out.append("H2")

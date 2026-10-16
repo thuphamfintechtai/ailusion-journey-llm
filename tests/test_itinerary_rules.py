@@ -492,7 +492,9 @@ def test_places_are_split_across_days_without_repeats() -> None:
     visits = [pid for pids in by_day.values() for pid in pids if pid != "q1"]
     assert sorted(visits) == sorted(["bana", "cauvang", "spa1", "spa2", "bien"])  # không lặp
     assert all("q1" in pids for pids in by_day.values())  # ít quán: ngày nào cũng dùng chung
-    assert not any({"spa1", "spa2"} <= set(pids) for pids in by_day.values())  # 1 spa mỗi ngày
+    # 2 spa cùng ở Hội An: chung ngày (mỗi lịch vẫn chỉ 1 spa), không đẩy 1 spa sang ngày ở biển
+    # Đà Nẵng cách 25 km chỉ để mỗi ngày 1 spa.
+    assert any({"spa1", "spa2"} <= set(pids) for pids in by_day.values())
     assert by_day[1][0] == "bana"  # mỏ neo ngày 1 là chỗ nổi tiếng nhất
 
 
@@ -1037,3 +1039,97 @@ def test_night_market_goes_last_instead_of_waiting_hours() -> None:
     assert market.start >= 17 * 60 and market.wait <= 45
     # Chỉ có 2 quán, không quán dự phòng: thiếu đúng 1 bữa, ngoài ra không lỗi gì.
     assert len(run.issues) == 1 and run.issues[0].startswith("thiếu bữa")
+
+
+def test_planner_output_survives_sloppy_fields_and_duplicate_ids() -> None:
+    """Một trường sai kiểu không được làm mất cả lô; 2 lịch trùng mã không được ghi đè nhau."""
+    out = PlannerOutput.model_validate(
+        {
+            "days": [
+                {
+                    "day": "1",
+                    "plans": [
+                        {"id": 1, "leave_stay": None, "stops": "Q1, D1, D2"},
+                        {"id": "1", "leave_stay": "08:00", "stops": ["Q1", "D3", None]},
+                        None,
+                    ],
+                }
+            ]
+        }
+    )
+    plans = out.days[0].plans
+    assert out.days[0].day == 1 and len(plans) == 2
+    assert plans[0].id == "1" and plans[0].leave_stay == "" and plans[0].stops == ["Q1", "D1", "D2"]
+    assert plans[1].stops == ["Q1", "D3"]
+    errs = plan_errors(out, {"Q1", "D1", "D2", "D3"}, {1: "08:00"})
+    assert any("trùng nhau trong ngày" in e for e in errs[1])
+
+
+def test_generic_google_category_is_not_a_type() -> None:
+    """ "Điểm thu hút khách du lịch" (làng gốm, show, nông trại…) không phải một loại: không bị luật
+    cùng loại / trần mỗi loại chặn; Planner thấy loại "–"."""
+    from ailusion.itinerary.agents.planner import PLANNER
+
+    farm = _place("farm", category="Điểm thu hút khách du lịch")
+    forest = _place("forest", category="Điểm thu hút khách du lịch")
+    code = _place("code", category="4004, 4004-2")
+    pagoda = _place("pagoda", category="Chùa")
+    assert farm.group == forest.group  # vẫn gộp chỗ trùng tên / ước giá theo loại như cũ
+    assert farm.type_key != forest.type_key and farm.type_label == "–"
+    assert code.type_label == "–" and pagoda.type_label == "chùa" and pagoda.type_key == "chùa"
+    pool, _ = pick_pool([farm, forest, code], [], 10, 0, center=None, per_group=1)
+    assert {p.place_id for p in pool} == {"farm", "forest", "code"}  # trần 1 / loại không chặn
+    assert 'loại "–" là chưa rõ loại, không tính' in PLANNER
+
+
+def test_matrix_points_are_shared_by_need_on_long_trips() -> None:
+    from ailusion.itinerary.coordinator.score import meal_points
+
+    assert meal_points(25, 19, 44) == 19  # đủ chỗ: quán lấy đủ, chỗ chơi lấy phần còn lại
+    # Đà Lạt 5 ngày: cần ~49 chỗ chơi, 31 quán, ma trận còn 44 điểm -> 17 quán, 27 chỗ chơi
+    # (trước đây 31 quán, 13 chỗ chơi).
+    assert meal_points(49, 31, 44) == 17
+
+
+def test_days_stay_in_one_area() -> None:
+    """Chuyến Đà Nẵng có chỗ ở Hội An (cách ~45 phút): chỗ vào ngày gần nó trước, kể cả khi ngày đó
+    đã có chỗ cùng loại (2 chùa ở Hội An) — trước đây chùa thứ 2 bị đẩy sang ngày ở Đà Nẵng. Quán
+    cũng vậy. Không ngày nào thiếu chỗ: mỗi ngày vẫn đủ phần của mình."""
+    from ailusion.itinerary.coordinator.score import split_by_day
+
+    dn = [
+        (16.06, 108.22),
+        (16.07, 108.23),
+        (16.05, 108.24),
+        (16.08, 108.21),
+        (16.06, 108.25),
+        (16.07, 108.21),
+    ]
+    ha = [(15.877, 108.33), (15.878, 108.331), (15.876, 108.329)]
+    dn_types = ["Chùa", "Chợ", "Bảo tàng", "Chợ", "Bãi biển", "Công viên"]
+    ha_types = ["Điểm mốc lịch sử", "Chùa", "Chùa"]
+    pool = [
+        _place(f"dn{i}", category=c, reviews=9000 - i, lat=a, lng=b)
+        for i, ((a, b), c) in enumerate(zip(dn, dn_types, strict=True))
+    ] + [
+        _place(f"ha{i}", category=c, reviews=20000 - i, lat=a, lng=b)
+        for i, ((a, b), c) in enumerate(zip(ha, ha_types, strict=True))
+    ]
+    pool += [
+        _place(f"q{w}{i}", kind="meal", category="Nhà hàng", reviews=500 - i, lat=a, lng=b)
+        for w, pts in (("dn", dn), ("ha", ha))
+        for i, (a, b) in enumerate(pts)
+    ]
+    by_day = split_by_day(pool, [1, 2, 3], {}, "motorbike")
+    for day, pids in by_day.items():
+        areas = {pid.removeprefix("q")[:2] for pid in pids}
+        assert len(areas) == 1, (day, pids)  # cả chỗ chơi lẫn quán: một vùng mỗi ngày
+        assert sum(not pid.startswith("q") for pid in pids) == 3  # không ngày nào thiếu chỗ
+    assert any(p.startswith("ha") for p in by_day[1])  # Hội An nổi tiếng nhất: mỏ neo ngày 1
+
+
+def test_planner_dashes_between_codes_are_not_codes() -> None:
+    """Model trả stops "Q3 – D1 – D8" (gạch dài) hay chèn "–" vào danh sách: không thành mã lạ."""
+    a = PlanDraft.model_validate({"id": "L1", "leave_stay": "08:00", "stops": "Q3 – D1 — D8"})
+    b = PlanDraft.model_validate({"id": "L2", "leave_stay": "08:00", "stops": ["Q3", "–", "D1"]})
+    assert a.stops == ["Q3", "D1", "D8"] and b.stops == ["Q3", "D1"]

@@ -141,3 +141,15 @@ async def test_latest_turn_returns_finished_turn_only(log: AgentLog):
     events = [e for _, e in await log.latest_turn(THREAD)]
     assert _kinds(events) == [(TURN_NODE, "start"), ("tra_loi", "answer"), (TURN_NODE, "done")]
     assert events[1]["text"] == "lượt 2"
+
+
+async def test_ctx_log_failure_does_not_break_the_pipeline(monkeypatch):
+    """Redis timeout khi máy bận (4 lộ trình chạy cùng lúc) từng làm nhánh lỗi -> HTTP 500."""
+    from ailusion.itinerary.shared import context
+
+    async def broken(*args, **kwargs):
+        raise TimeoutError("Timeout reading from localhost:6381")
+
+    monkeypatch.setattr(context.agent_log, "publish", broken)
+    ctx = context.Ctx([], {"configurable": {"thread_id": "t"}}, node="kiem_lich")
+    await ctx.log("kiem_lich", "finding", "Chạy thử 6 lịch")  # không ném lỗi

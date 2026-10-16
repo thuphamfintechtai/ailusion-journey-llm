@@ -33,7 +33,7 @@ from ..shared.models import (
     wanted_words,
 )
 from ..shared.tools import add_places, add_stays, tool_ok
-from .score import STAY_TARGET_SHARE
+from .score import stay_target_share
 
 ENOUGH_VISITS = 6
 NEARBY_KM = 10
@@ -98,10 +98,13 @@ def vietmap_near(
     }  # tỉ lệ chữ trong tên user gõ phải có trong tên chỗ tìm được
 
 
-def name_match(wanted: str, name: str) -> float:
+def name_match(wanted: str, name: str, place: str | None = None) -> float:
     """Tỉ lệ chữ (bỏ dấu) của tên user gõ có trong tên chỗ: "ba na hills" vs "Sun World Bà Nà
-    Hills" = 1.0."""
+    Hills" = 1.0. Chữ của tên điểm đến `place` không tính (còn chữ khác thì thôi): "Đại Nội Huế"
+    từng khớp "NGƯ PHỐ - Chả Cá Hà Nội tại Huế" 2/3 nhờ "Nội" + "Huế"."""
     want = set(re.findall(r"\w+", _plain(wanted)))
+    if place:
+        want = (want - set(re.findall(r"\w+", _plain(place)))) or want
     have = set(re.findall(r"\w+", _plain(name)))
     return len(want & have) / len(want) if want else 0.0
 
@@ -143,12 +146,15 @@ FAMOUS_SHARE = 0.3  # chỗ cùng tên có ≥ ngần này × số review của 
 
 
 def best_match(
-    wanted: str, found: list[Place], center: tuple[float, float] | None = None
+    wanted: str,
+    found: list[Place],
+    center: tuple[float, float] | None = None,
+    place: str | None = None,
 ) -> Place | None:
     """Chỗ khớp tên nhất (đủ `MUST_MATCH`). Nhiều chỗ khớp như nhau và đều nổi tiếng thì lấy chỗ
     gần trung tâm điểm đến nhất: Google có cả ghim "Ba Na Hills" trên đỉnh núi (xe không tới,
     phút đi sai hẳn) lẫn "Sun World Bà Nà Hills" ở ga cáp treo — lấy chỗ đi tới được."""
-    scored = [(name_match(wanted, p.name), p) for p in found if not other_type(wanted, p)]
+    scored = [(name_match(wanted, p.name, place), p) for p in found if not other_type(wanted, p)]
     top = max((sc for sc, _ in scored), default=0.0)
     if top < MUST_MATCH:
         return None
@@ -205,7 +211,7 @@ async def find_musts(
     for i, (m, data) in enumerate(zip(musts, results, strict=True)):
         pool: dict[str, Place] = {}
         add_places(pool, data, "find_places", any_kind=True)
-        if hit := best_match(m.name, list(pool.values()), center):
+        if hit := best_match(m.name, list(pool.values()), center, dest):
             picked[i] = hit
     # DB không có: hỏi SerpApi (tốn quota), chỉ cho đúng các chỗ còn thiếu.
     # DB không có: Vietmap trước (không tốn quota SerpApi), vẫn không thấy mới hỏi SerpApi.
@@ -221,7 +227,7 @@ async def find_musts(
         for i, data in zip(left, more, strict=True):
             pool: dict[str, Place] = {}
             add_places(pool, data, tool, any_kind=True)
-            if hit := best_match(musts[i].name, list(pool.values()), center):
+            if hit := best_match(musts[i].name, list(pool.values()), center, dest):
                 picked[i] = hit
     notes = []
     for i, m in enumerate(musts):
@@ -271,7 +277,7 @@ def stay_band_calls(
     if not trip_budget or not form.num_nights or form.stay_booked:
         return []
     rooms = -(-form.group_size // 2)
-    target = trip_budget * STAY_TARGET_SHARE / form.num_nights / rooms
+    target = trip_budget * stay_target_share(form) / form.num_nights / rooms
     return [
         (
             "find_stays",
