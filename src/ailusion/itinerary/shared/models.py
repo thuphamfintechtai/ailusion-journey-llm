@@ -29,6 +29,7 @@ CATEGORY_GROUPS: dict[str, tuple[str, ...]] = {
     "biển": ("bãi biển", "bãi tắm"),
     "chợ": ("chợ", "trung tâm thương mại", "mua sắm"),
     "cà phê": ("cà phê", "cafe", "coffee"),
+    "quán bar": ("karaoke", "quán bar", "quán rượu", "hộp đêm", "pub"),
 }
 
 

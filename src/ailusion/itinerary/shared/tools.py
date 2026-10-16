@@ -54,7 +54,16 @@ STAY_WORDS = (
     "apartment",
     "condotel",
 )
-SKIP_WORDS = ("nhà điều hành du lịch", "công ty du lịch", "đại lý", "văn phòng")
+SKIP_WORDS = (
+    "nhà điều hành du lịch",
+    "công ty du lịch",
+    "đại lý",
+    "văn phòng",
+    "tiếp viên nữ",  # "Quán bar tiếp viên nữ": không đưa vào lộ trình du lịch
+)
+# Chỗ chơi đêm, không phải bữa ăn: loại Google "Quán bar karaoke", "Quán bar", "Quán rượu" có chữ
+# "quán" nên từng bị coi là quán. Quán bia / quán nhậu vẫn là quán (có bán đồ ăn).
+NIGHT_WORDS = ("karaoke", "quán bar", "quán rượu", "hộp đêm", "pub", "night club", "nightclub")
 
 
 def nfc(text: Any) -> str:
@@ -74,6 +83,11 @@ def kind_of(category: str, name: str) -> str | None:
     words = nfc(f" {category} ").lower() if re.search(r"[^\W\d_]", category) else text
     if any(w in words for w in STAY_WORDS):
         return "stay"
+    # "karaoke" xét cả tên: "KARAOKE VT KTV" Google ghi loại "Nhà hàng". Chữ "KTV" thì không
+    # ("Nhà hàng KTV" ở Huế là quán bún thật). Loại có "nhà hàng" ("Nhà hàng quán rượu dành cho
+    # người sành ăn" — gastropub) vẫn là quán.
+    if "karaoke" in text or (any(w in words for w in NIGHT_WORDS) and "nhà hàng" not in words):
+        return "visit"
     if any(w in words for w in FOOD_WORDS):
         return "meal"
     return "visit"

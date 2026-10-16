@@ -101,3 +101,18 @@ def test_rating_floor_uses_mcp_bayes_and_falls_back_to_hoeffding() -> None:
     pool["a"].rating_adjusted = 4.3
     assert a.rating_trusted and not a.rating_above_peers
     assert c.rating_floor == rating_floor(4.8, 40) and c.rating_trusted  # 4,026 ≥ 4,0
+
+
+def test_bars_and_karaoke_are_not_meals() -> None:
+    from ailusion.itinerary.shared.tools import kind_of
+
+    # Loại Google có chữ "quán" nhưng không phải bữa ăn: chỗ chơi đêm.
+    assert kind_of("Quán bar karaoke", "Karaoke ICOOL") == "visit"
+    assert kind_of("Quán bar cocktail", "Chill Skybar & Dining") == "visit"
+    assert kind_of("Quán rượu", "Malt South") == "visit"
+    assert kind_of("Nhà hàng", "KARAOKE VT KTV") == "visit"  # karaoke xét cả tên
+    assert kind_of("Quán bar tiếp viên nữ", "YUMI Counter & Lounge") is None
+    # Vẫn là quán: quán bia / nhậu, gastropub, "Nhà hàng KTV" (quán bún thật ở Huế).
+    assert kind_of("Quán bia", "Bia Hơi") == "meal"
+    assert kind_of("Nhà hàng quán rượu dành cho người sành ăn", "Khoai Ruin Bar") == "meal"
+    assert kind_of("Nhà hàng gia đình", "Nhà hàng KTV") == "meal"
