@@ -41,7 +41,7 @@ from ..shared.form import (
 )
 from ..shared.models import DayWindow, ItineraryState, TripProfile, form_of, profile_of
 from ..shared.tools import tool_ok
-from .levels import budget_level, price_levels
+from .levels import budget_level, budget_text, price_levels
 
 
 def profile_trip(
@@ -322,6 +322,10 @@ async def phan_nhom(state: ItineraryState, ctx: Ctx) -> dict:
         + " phút"
     )
     await ctx.log("phan_nhom", "plan", text)
+    # Ngân sách theo "mỗi người" / có vé đã mua: ghi số cả đoàn cả chuyến máy dùng để so (bấm nhầm
+    # "mỗi người mỗi ngày" thì 6 triệu thành 36 triệu, user thấy ngay khi đang chờ).
+    if (form.budget_unit != "group_trip" or form.prepaid_tickets) and (b := budget_text(form)):
+        await ctx.log("phan_nhom", "finding", f"Ngân sách: {b}")
     # Báo sớm (trước khi lập lịch) khi ngân sách thấp so với mặt bằng giá của điểm đến.
     level = budget_level(form, profile)
     if level and level.get("log"):

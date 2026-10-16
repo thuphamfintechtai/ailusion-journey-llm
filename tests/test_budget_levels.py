@@ -10,7 +10,13 @@ from typing import Any
 
 import pytest
 
-from ailusion.itinerary.coordinator.levels import budget_level, level_costs, price_levels, up
+from ailusion.itinerary.coordinator.levels import (
+    budget_level,
+    budget_text,
+    level_costs,
+    price_levels,
+    up,
+)
 from ailusion.itinerary.coordinator.profile import profile_trip
 from ailusion.itinerary.shared.form import EXTRA_MID, TripForm, money, required_meals
 
@@ -142,7 +148,9 @@ def test_budget_units_mean_the_same_trip_budget() -> None:
     ]
     forms = [_form(destination="Đà Nẵng", **TRIP_3D, **o) for o in same]
     assert {profile_trip(f, DN).trip_budget for f in forms} == {6_000_000}
-    assert len({str(budget_level(f, profile_trip(f, DN))) for f in forms}) == 1
+    # Cùng lời báo, chỉ khác dòng ghi phép quy đổi (`budget_text`).
+    same_level = [budget_level(f, profile_trip(f, DN)) or {} for f in forms]
+    assert len({str({k: v for k, v in x.items() if k != "budget_text"}) for x in same_level}) == 1
     # Đông người thì "mỗi người" nhân lên: 8 người × 1tr × 3 ngày = 24tr.
     many = _form(group_size=8, budget=1_000_000, budget_unit="person_day", **TRIP_3D)
     assert profile_trip(many, DN).trip_budget == 24_000_000
@@ -182,3 +190,70 @@ def test_shown_amount_is_above_the_budget_when_warning() -> None:
     assert level and level["severity"] == "warn"
     assert up(saving) > budget and f"khoảng {money(up(saving))}, hơn" in level["text"]
     assert level["levels"][0]["total"] == up(saving)
+
+
+# ---------------------------------------------------------------- ngân sách dư, phép quy đổi
+def test_surplus_when_the_plan_cannot_use_a_high_budget() -> None:
+    # Chỗ rẻ, ngân sách rất cao: Huế 30 triệu, lịch chỉ ước 12 triệu.
+    form = _form(destination="Huế", budget=30_000_000, **TRIP_3D)
+    profile = profile_trip(form, HUE)
+    level = budget_level(form, profile, 12_000_000)
+    assert level and level["kind"] == "surplus" and level["severity"] == "info"
+    assert level["title"] == "Ngân sách dư so với Huế" and level["target"] == "luxury"
+    assert "thấp hơn ngân sách 30.000.000 đ khoảng 60%" in level["text"]
+    assert level["log"] is None  # chỉ biết sau khi lập lịch
+    assert budget_level(form, profile) is None  # bước 3: chưa có tổng ước
+    assert budget_level(form, profile, 29_000_000) is None  # lịch dùng gần hết ngân sách
+    # Ngân sách chưa tới mức sang: lịch tiêu ít là do lịch, không phải điểm đến rẻ -> không báo dư.
+    top = level_costs(form, profile)[2]["total"]
+    near = _form(destination="Huế", budget=top - 100_000, **TRIP_3D)
+    assert budget_level(near, profile_trip(near, HUE), 1_000_000) is None
+    # "Sang, không vượt ngân sách" cũng báo; "không giới hạn" thì không (không so ngân sách).
+    lux = _form(destination="Huế", budget=30_000_000, spend_style="luxury_within_budget", **TRIP_3D)
+    assert budget_level(lux, profile_trip(lux, HUE), 12_000_000)["kind"] == "surplus"  # type: ignore[index]
+    free = _form(destination="Huế", budget=30_000_000, spend_style="unlimited", **TRIP_3D)
+    assert budget_level(free, profile_trip(free, HUE), 12_000_000)["kind"] == "unlimited"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("over", "text"),
+    [
+        ({"budget": 6_000_000}, "6 triệu cả đoàn cả chuyến"),
+        (
+            {"budget": 3_000_000, "budget_unit": "person_trip"},
+            "3 triệu mỗi người × 2 người = 6 triệu cả đoàn cả chuyến",
+        ),
+        (
+            {"budget": 1_000_000, "budget_unit": "person_day"},
+            "1 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 6 triệu cả đoàn cả chuyến",
+        ),
+        (  # bấm nhầm đơn vị: thấy ngay 36 triệu
+            {"budget": 6_000_000, "budget_unit": "person_day"},
+            "6 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 36 triệu cả đoàn cả chuyến",
+        ),
+        (
+            {"budget": 10_000_000, "prepaid_tickets": 1_500_000},
+            "10 triệu − vé đã mua 1,5 triệu × 2 người = 7 triệu cả đoàn cả chuyến",
+        ),
+        (
+            {"budget": 6_000_000, "budget_min": 3_000_000},
+            "3–6 triệu cả đoàn cả chuyến, so với giữa khoảng 4,5 triệu",
+        ),
+        ({"budget": None, "budget_min": 10_000_000}, "từ 10 triệu cả đoàn cả chuyến"),
+        ({"budget": 3_000_000, "budget_min": 0}, "tối đa 3 triệu cả đoàn cả chuyến"),
+        ({"budget": None}, None),
+    ],
+)
+def test_budget_text_shows_the_conversion(over: dict[str, Any], text: str | None) -> None:
+    assert budget_text(_form(**TRIP_3D, **over)) == text
+
+
+def test_request_text_states_ranges_and_per_person_totals() -> None:
+    from ailusion.itinerary.response import request_text
+
+    day = request_text(_form(budget=6_000_000, budget_unit="person_day", **TRIP_3D))
+    assert "Ngân sách 6.000.000 đ mỗi người mỗi ngày (= 36.000.000 đ cả đoàn cả chuyến)." in day
+    span = request_text(_form(budget=6_000_000, budget_min=3_000_000, **TRIP_3D))
+    assert "Ngân sách 3.000.000–6.000.000 đ cả đoàn cả chuyến." in span
+    above = request_text(_form(budget=None, budget_min=10_000_000, **TRIP_3D))
+    assert "Ngân sách từ 10.000.000 đ cả đoàn cả chuyến." in above

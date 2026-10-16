@@ -250,15 +250,29 @@ def test_money_notes_explain_estimates_and_suggest_upgrades() -> None:
         rating=4.8,
         reviews=900,
     )
+    # Chỗ ở đẹp hơn nhưng cách trung tâm hơn 30 km (bước chọn chỗ ở đã bỏ): không gợi ý lại.
+    far = Place(
+        place_id="s3",
+        name="Resort Lăng Cô",
+        category="Khách sạn",
+        kind="stay",
+        lat=16.25,
+        lng=108.07,
+        price=1_500_000,
+        rating=4.9,
+        reviews=3000,
+    )
     state = {
         "places": {k: place_to_dict(v) for k, v in places.items()},
+        "center": [15.88, 108.33],
         "stay": place_to_dict(stay),
-        "stays": {"a": place_to_dict(stay), "b": place_to_dict(better)},
+        "stays": {"a": place_to_dict(stay), "b": place_to_dict(better), "c": place_to_dict(far)},
     }
     best = {"days": [_plan(1, "L", 1_000_000, ["v"])], "estimate": 8_000_000}
     notes = " ".join(money_notes(state, best, form, profile))
     assert "giá ước" in notes
     assert "Resort Sông Hoài" in notes and "show" in notes
+    assert "Resort Lăng Cô" not in notes
 
 
 def test_day_over_budget_compares_full_day_spend_with_planner_target() -> None:

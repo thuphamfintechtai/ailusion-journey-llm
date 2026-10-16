@@ -27,7 +27,7 @@ from ..shared.form import (
     money,
     trip_budget,
 )
-from ..shared.math import dominates
+from ..shared.math import dominates, km
 from ..shared.models import (
     DayPlan,
     ItineraryState,
@@ -40,6 +40,7 @@ from ..shared.models import (
     plans_of,
     profile_of,
 )
+from .score import STAY_MAX_KM
 
 
 def compare_dims(group: str) -> list[tuple[str, str]]:
@@ -455,11 +456,16 @@ def money_notes(
     if stay and stay.price and not form.stay_booked and form.num_nights:
         rooms = -(-n // 2)
         up_to = stay.price + spare / form.num_nights / rooms
+        center = state.get("center")
         better = sorted(
             (
                 place_from_dict(s)
                 for s in (state.get("stays") or {}).values()
-                if s.get("price") and stay.price < s["price"] <= up_to
+                if s.get("price")
+                and stay.price < s["price"] <= up_to
+                # Chỗ ở bước chọn chỗ ở đã bỏ vì xa trung tâm thì không gợi ý lại (từng gợi ý
+                # "nâng chỗ ở: Laguna Lăng Cô" cho chuyến Huế, ngay dưới dòng "bỏ … hơn 30 km").
+                and (not center or km(tuple(center), (s["lat"], s["lng"])) <= STAY_MAX_KM)
             ),
             key=lambda s: -(s.rating_floor or 0),
         )[:UPGRADE_STAYS]
