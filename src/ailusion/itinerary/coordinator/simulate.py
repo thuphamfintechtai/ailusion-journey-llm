@@ -253,7 +253,9 @@ def drop_bad_meals(
         if close:  # sát bữa trước: bỏ, bước đặt quán xếp bữa này muộn hơn
             bad.append(st.place_id)
             continue
-        in_window = any(to_minutes(a) <= st.start <= to_minutes(b) for a, b in MEALS.values())
+        # Quán chỉ bán bữa sáng mà rơi vào trưa / tối: bỏ, bước đặt quán chèn quán khác.
+        meal_windows = [BREAKFAST] if p.breakfast_only else MEALS.values()
+        in_window = any(to_minutes(a) <= st.start <= to_minutes(b) for a, b in meal_windows)
         # Bữa tối cuối ngày được trống tới DINNER_FREE_MAX trước giờ ăn (thời gian tự do).
         last = k == len(run.stops) - 1
         if not in_window or (st.wait > MEAL_WAIT_MAX and not last):
@@ -744,6 +746,8 @@ def meal_time_issues(
                 f"{BREAKFAST[1]}, trưa {LUNCH[0]}–{LUNCH[1]} và tối {DINNER[0]}–{DINNER[1]}"
             )
         elif name is not None:
+            if p.breakfast_only and name != "sáng":
+                out.append(f"{p.name} chỉ bán bữa sáng, không làm bữa {name} ({hhmm(s.start)})")
             eaten[name] = eaten.get(name, 0) + 1
     leave = to_minutes(plan.leave_stay)
     for name, (a, b) in windows.items():

@@ -83,8 +83,18 @@ class Place:
         return unicodedata.normalize("NFC", self.category).strip().lower() or self.text
 
     @property
+    def breakfast_only(self) -> bool:
+        """Quán chỉ bán bữa sáng (loại Google "Nhà hàng chuyên phục vụ bữa sáng"): không làm bữa
+        trưa / tối."""
+        cat = unicodedata.normalize("NFC", self.category).lower()
+        return self.kind == "meal" and any(w in cat for w in BREAKFAST_WORDS)
+
+    @property
     def rating_floor(self) -> float | None:
         return rating_floor(self.rating, self.reviews)
+
+
+BREAKFAST_WORDS = ("bữa sáng", "ăn sáng", "điểm tâm", "breakfast")
 
 
 # Tên quán: phần sau các dấu này là địa chỉ / chi nhánh, không phải thương hiệu
