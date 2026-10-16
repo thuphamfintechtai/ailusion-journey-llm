@@ -473,3 +473,40 @@ def test_a_cafe_named_spa_is_still_a_breakfast_place():
         DayPlan(id="L", day=4, leave_stay="08:00", stops=["c"]), {"c": cafe}, m, w, [], False
     )
     assert run.stops[0].start < 9 * 60  # không bị bắt chờ tới 13:00 như spa
+
+
+def test_food_court_counts_as_a_meal_and_breakfast_places_only_serve_breakfast():
+    from ailusion.itinerary.coordinator.simulate import drop_bad_meals, simulate
+    from ailusion.itinerary.shared.models import STAY, Place
+    from ailusion.itinerary.shared.tools import kind_of
+
+    # Lịch Đà Lạt thật: Le Rabelais 8:11 rồi "Lẩu gà lá é Tao Ngộ" (loại "Khu ăn uống") 8:59.
+    assert kind_of("Khu ăn uống", "Lẩu gà lá é Tao Ngộ QUÁN GỐC KHÔNG CHI NHÁNH") == "meal"
+    assert kind_of("Điểm thu hút khách du lịch", "Làng Cù Lần") == "visit"
+
+    def place(pid: str, cat: str, kind: str = "meal", stay: int = 45) -> Place:
+        return Place(
+            place_id=pid,
+            name=pid,
+            category=cat,
+            kind=kind,
+            lat=11.9,
+            lng=108.4,
+            stay_low=stay,
+            stay_high=stay,
+        )
+
+    # Quán chuyên bữa sáng (Bánh mì xíu mại Phúc Hân) xếp làm bữa trưa 11:54: lỗi, bỏ.
+    places = {
+        "b": place("b", "Nhà hàng"),
+        "v": place("v", "Điểm thu hút khách du lịch", "visit", 180),
+        "x": place("x", "Nhà hàng chuyên phục vụ bữa sáng"),
+    }
+    assert places["x"].breakfast_only and not places["b"].breakfast_only
+    ids = [*places, STAY]
+    m = {(a, b): 20.0 for a in ids for b in ids if a != b}
+    w = DayWindow(day=2, day_start="08:00", day_end="14:00", free_minutes=360)
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["b", "v", "x"])
+    issues = simulate(plan, places, m, w, [], False).issues
+    assert any("chỉ bán bữa sáng" in i for i in issues)
+    assert drop_bad_meals(plan, places, m, w, []) == 1 and "x" not in plan.stops

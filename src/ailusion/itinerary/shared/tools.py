@@ -29,6 +29,15 @@ FOOD_WORDS = (
     "street food",
     "food",
     "restaurant",
+    # Loại Google của quán mà không có chữ "nhà hàng" / "quán ăn" ("Khu ăn uống" — Lẩu gà lá é
+    # Tao Ngộ, Đà Lạt bị coi là chỗ chơi nên lọt luật 2 bữa cách nhau, ăn 8:11 rồi 8:59 ăn tiếp).
+    "ăn uống",
+    "ăn vặt",
+    "nhậu",
+    "buffet",
+    "bistro",
+    "eatery",
+    "bbq",
 )
 
 
