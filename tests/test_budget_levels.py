@@ -1,19 +1,31 @@
 """Mức chi của điểm đến (coordinator/levels.py): mỗi mức chi user chọn so ngân sách với một trung vị
-riêng của mặt bằng giá cả điểm đến, mỗi mức một lời báo riêng."""
+riêng của mặt bằng giá cả điểm đến, mỗi mức một lời báo riêng.
+
+Kèm các kịch bản ngân sách: chỗ đắt / rẻ, ngân sách thấp / cao, đơn vị ngân sách, đông người, khoảng
+ngân sách, vé đã mua, đi trong ngày."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ailusion.itinerary.coordinator.levels import budget_level, level_costs, price_levels
-from ailusion.itinerary.coordinator.profile import profile_trip
-from ailusion.itinerary.shared.form import TripForm, required_meals
+import pytest
 
-# Phú Quốc (DB 10/2026): phòng 0,80 / 1,40 / 3,25 triệu mỗi đêm (150 chỗ có giá), quán 150 / 250 /
-# 350 nghìn mỗi người (56 quán có giá).
-PQ = {
+from ailusion.itinerary.coordinator.levels import budget_level, level_costs, price_levels, up
+from ailusion.itinerary.coordinator.profile import profile_trip
+from ailusion.itinerary.shared.form import EXTRA_MID, TripForm, money, required_meals
+
+# Mặt bằng giá trong DB (10/2026): giá phòng / đêm, giá quán / người — p25 / trung vị / p75.
+PQ = {  # Phú Quốc: chỗ đắt
     "stay": {"p25": 801_451, "median": 1_401_065, "p75": 3_248_604, "count": 150},
     "meal": {"p25": 150_000, "median": 250_000, "p75": 350_000, "count": 56},
+}
+HUE = {  # Huế: chỗ rẻ
+    "stay": {"p25": 408_689, "median": 532_767, "p75": 1_000_589, "count": 134},
+    "meal": {"p25": 150_000, "median": 150_000, "p75": 250_000, "count": 38},
+}
+DN = {  # Đà Nẵng
+    "stay": {"p25": 513_369, "median": 811_094, "p75": 1_577_504, "count": 283},
+    "meal": {"p25": 150_000, "median": 250_000, "p75": 350_000, "count": 44},
 }
 
 
@@ -32,26 +44,33 @@ def _form(**over: Any) -> TripForm:
     return TripForm.model_validate(data)
 
 
-def _level(**over: Any) -> dict[str, Any] | None:
+def _level(levels: dict[str, Any] = PQ, **over: Any) -> dict[str, Any] | None:
     form = _form(**over)
-    return budget_level(form, profile_trip(form, PQ))
+    return budget_level(form, profile_trip(form, levels))
 
 
-def test_levels_take_quartiles_per_night_and_per_room() -> None:
+def _severity(levels: dict[str, Any] = PQ, **over: Any) -> str | None:
+    level = _level(levels, **over)
+    return level["severity"] if level else None
+
+
+def test_levels_take_quartiles_per_night_and_per_room_plus_extras() -> None:
     form = _form()
     profile = profile_trip(form, PQ)
     meals = sum(len(required_meals(d.day_start, d.day_end)) for d in profile.days)
     rows = {r["key"]: r for r in level_costs(form, profile)}
     assert [r["label"] for r in rows.values()] == ["Tiết kiệm", "Thường gặp", "Sang"]
-    assert (
-        rows["saving"]["basis"] == "trung vị nửa rẻ"
-        and rows["luxury"]["basis"] == "trung vị nửa đắt"
-    )
-    # 4 ngày 3 đêm, 2 người 1 phòng: phòng tính theo số ĐÊM (không phải số ngày), không ÷ 2 người.
-    assert rows["normal"]["total"] == 1_401_065 * 3 + 250_000 * meals * 2
+    assert rows["saving"]["basis"] == "trung vị nửa rẻ"
+    assert rows["luxury"]["basis"] == "trung vị nửa đắt"
+    # 4 ngày 3 đêm, 2 người 1 phòng: phòng tính theo số ĐÊM, không ÷ 2 người; cộng phát sinh như
+    # tổng ước của lịch.
+    core = 1_401_065 * 3 + 250_000 * meals * 2
+    assert rows["normal"]["total"] == round(core * (1 + EXTRA_MID))
     # Đã đặt chỗ ở: chỉ còn tiền ăn.
     booked = _form(stay_booked="Nhà bạn")
-    assert level_costs(booked, profile_trip(booked, PQ))[0]["total"] == 150_000 * meals * 2
+    assert level_costs(booked, profile_trip(booked, PQ))[0]["total"] == round(
+        150_000 * meals * 2 * (1 + EXTRA_MID)
+    )
 
 
 def test_each_spend_style_compares_with_its_own_median() -> None:
@@ -87,3 +106,79 @@ def test_no_price_stats_no_level() -> None:
     assert price_levels({"price_stats_vnd": PQ["stay"]}, {"price_stats_vnd": PQ["meal"]}) == PQ
     form = _form()
     assert budget_level(form, profile_trip(form)) is None
+
+
+# ---------------------------------------------------------------- kịch bản ngân sách
+TRIP_3D = {"end_date": "2026-10-26"}  # 3 ngày 2 đêm
+
+
+@pytest.mark.parametrize(
+    ("levels", "over", "expected"),
+    [
+        # Chỗ đắt: ngân sách thấp / vừa / cao.
+        (PQ, {"budget": 4_000_000}, "warn"),  # phòng + ăn tiết kiệm 3,9tr + phát sinh > 4tr
+        (PQ, {"budget": 6_000_000}, "info"),
+        (PQ, {"budget": 20_000_000}, None),
+        # Chỗ rẻ: ngân sách thấp / vừa / rất cao (mức chi nào cũng không báo thiếu).
+        (HUE, {"budget": 2_000_000}, "warn"),
+        (HUE, {"budget": 5_000_000}, None),
+        (HUE, {"budget": 30_000_000}, None),
+        (HUE, {"budget": 30_000_000, "spend_style": "luxury_within_budget"}, None),
+        # Đông người, ngân sách không cao: 8 người = 4 phòng, 8 suất ăn mỗi bữa.
+        (DN, {"budget": 10_000_000, "group_size": 8, "group_type": "friends"}, "warn"),
+        (DN, {"budget": 20_000_000, "group_size": 8, "group_type": "friends"}, "info"),
+    ],
+)
+def test_budget_scenarios(levels: dict[str, Any], over: dict[str, Any], expected: str) -> None:
+    assert _severity(levels, **TRIP_3D, **over) == expected
+
+
+def test_budget_units_mean_the_same_trip_budget() -> None:
+    # 2 người 3 ngày: 6tr cả đoàn = 3tr mỗi người cả chuyến = 1tr mỗi người mỗi ngày.
+    same = [
+        {"budget": 6_000_000},
+        {"budget": 3_000_000, "budget_unit": "person_trip"},
+        {"budget": 1_000_000, "budget_unit": "person_day"},
+    ]
+    forms = [_form(destination="Đà Nẵng", **TRIP_3D, **o) for o in same]
+    assert {profile_trip(f, DN).trip_budget for f in forms} == {6_000_000}
+    assert len({str(budget_level(f, profile_trip(f, DN))) for f in forms}) == 1
+    # Đông người thì "mỗi người" nhân lên: 8 người × 1tr × 3 ngày = 24tr.
+    many = _form(group_size=8, budget=1_000_000, budget_unit="person_day", **TRIP_3D)
+    assert profile_trip(many, DN).trip_budget == 24_000_000
+
+
+@pytest.mark.parametrize(
+    ("over", "trip_budget"),
+    [
+        ({"budget": 3_000_000, "budget_min": 0}, 3_000_000),  # "Dưới 3 triệu"
+        ({"budget": 6_000_000, "budget_min": 3_000_000}, 4_500_000),  # "3–6 triệu": giữa khoảng
+        ({"budget": None, "budget_min": 10_000_000}, 10_000_000),  # "Trên 10 triệu": mức sàn
+        ({"budget": 10_000_000, "prepaid_tickets": 1_500_000}, 7_000_000),  # trừ vé đã mua
+    ],
+)
+def test_budget_ranges_and_prepaid_tickets(over: dict[str, Any], trip_budget: int) -> None:
+    form = _form(**TRIP_3D, **over)
+    assert profile_trip(form, PQ).trip_budget == trip_budget
+
+
+def test_day_trip_has_no_room_cost() -> None:
+    form = _form(destination="Đà Nẵng", end_date="2026-10-24", budget=600_000)
+    profile = profile_trip(form, DN)
+    meals = sum(len(required_meals(d.day_start, d.day_end)) for d in profile.days)
+    # 0 đêm: chỉ tiền ăn trong ngày.
+    assert [r["total"] for r in level_costs(form, profile)] == [
+        round(DN["meal"][q] * meals * 2 * (1 + EXTRA_MID)) for q in ("p25", "median", "p75")
+    ]
+
+
+def test_shown_amount_is_above_the_budget_when_warning() -> None:
+    # Ngân sách sát dưới mức tiết kiệm: số hiện ra (làm tròn lên) phải lớn hơn ngân sách, không
+    # thành "khoảng 8.000.000 đ, hơn ngân sách 8.000.000 đ".
+    form = _form(**TRIP_3D)
+    saving = level_costs(form, profile_trip(form, PQ))[0]["total"]
+    budget = saving - 1_000
+    level = _level(**TRIP_3D, budget=budget)
+    assert level and level["severity"] == "warn"
+    assert up(saving) > budget and f"khoảng {money(up(saving))}, hơn" in level["text"]
+    assert level["levels"][0]["total"] == up(saving)

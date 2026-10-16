@@ -160,13 +160,13 @@ Phát sinh trên tab Chi phí: `EXTRA_PCT` 10–15%, ngày mưa / lễ +5% vào 
 
 ## 10. Mức chi của điểm đến ([coordinator/levels.py](../src/ailusion/itinerary/coordinator/levels.py))
 
-Mỗi mức = phòng × số **đêm** × số phòng (2 người 1 phòng) + 1 bữa × số bữa bắt buộc (theo giờ rảnh từng ngày) × số người. Chưa gồm vé, đi lại, phát sinh: ngân sách dưới mức này là chắc thiếu, không báo nhầm. Đã đặt chỗ ở thì chỉ còn tiền ăn.
+Mỗi mức = (phòng × số **đêm** × số phòng (2 người 1 phòng) + 1 bữa × số bữa bắt buộc (theo giờ rảnh từng ngày) × số người) × (1 + `EXTRA_MID`), cộng phát sinh như tổng ước của lịch. Chưa gồm vé, đi lại: ngân sách dưới mức này là chắc thiếu, không báo nhầm. Đã đặt chỗ ở thì chỉ còn tiền ăn. Số hiện ra làm tròn **lên** 100 nghìn (làm tròn thường từng ra "khoảng 8.000.000 đ, hơn ngân sách 8.000.000 đ"); so ngân sách bằng số chưa làm tròn.
 
 | Mức của điểm đến | Giá phòng / đêm, giá quán / người | Phú Quốc 2 người 4 ngày 3 đêm (DB 10/2026) |
 |---|---|---|
-| Tiết kiệm | trung vị nửa rẻ (p25) | 0,80 triệu + 163 nghìn → ~6,0 triệu |
-| Thường gặp | trung vị | 1,40 triệu + 250 nghìn → ~9,7 triệu |
-| Sang | trung vị nửa đắt (p75) | 3,25 triệu + 350 nghìn → ~17,4 triệu |
+| Tiết kiệm | trung vị nửa rẻ (p25) | 0,80 triệu + 163 nghìn → ~6,8 triệu |
+| Thường gặp | trung vị | 1,40 triệu + 250 nghìn → ~11,0 triệu |
+| Sang | trung vị nửa đắt (p75) | 3,25 triệu + 350 nghìn → ~19,7 triệu |
 
 Mỗi mức chi user chọn so ngân sách (`trip_budget`) với một mức riêng và có lời báo riêng:
 
@@ -180,3 +180,20 @@ Mỗi mức chi user chọn so ngân sách (`trip_budget`) với một mức ri�
 - Ngân sách dưới mức đem so mà có quán / vé đắt hơn phần tiền mỗi ngày (`costly_ids`) thì bước chốt danh sách ghi thêm "đã ưu tiên quán dưới … mỗi người mỗi bữa và chỗ chơi vé dưới … mỗi người".
 - MCP chưa trả `price_stats_vnd` cho quán (bản cũ) thì không báo: không đoán từ vài quán phổ biến nhất.
 - Giá quán trên Google Maps là khoảng giá ("100–200 N ₫" → 150 nghìn); quán bình dân hay không ghi giá nên mức Tiết kiệm có thể cao hơn thực tế đi bụi.
+
+### Kịch bản đã thử ([tests/test_budget_levels.py](../tests/test_budget_levels.py), giá thật trong DB 10/2026)
+
+| Kịch bản | Kết quả |
+|---|---|
+| Chỗ đắt, ngân sách thấp: Phú Quốc 2 người 3N2Đ 4 triệu | đỏ: tiết kiệm ~4,4 triệu (phòng + ăn tiết kiệm 3,9 triệu + phát sinh) |
+| Chỗ đắt, ngân sách vừa / cao: Phú Quốc 8 / 20 triệu | không báo |
+| Chỗ rẻ, ngân sách thấp: Huế 2 người 3N2Đ 2 triệu | đỏ |
+| Chỗ rẻ, ngân sách rất cao: Huế 30 triệu (Bình thường / Sang) | không báo thiếu; lịch tiêu thấp hơn ngân sách thì ghi chú cuối kết quả + gợi ý nâng chỗ ở, hoạt động có phí (mục 8) |
+| Đơn vị: 6 triệu cả đoàn = 3 triệu mỗi người cả chuyến = 1 triệu mỗi người mỗi ngày (2 người 3 ngày) | cùng mốc 6 triệu, cùng lời báo |
+| Đông người, ngân sách không cao: Đà Nẵng 8 người 3N2Đ 10 triệu (4 phòng) | đỏ |
+| Gia đình 2 lớn + 2 trẻ: Nha Trang 8 triệu | đỏ (2 phòng, 4 suất ăn) |
+| Khoảng "Dưới 3 triệu" / "3–6 triệu" / "Trên 10 triệu" (Hội An 2 người) | mốc 3 / 4,5 (giữa khoảng) / 10 triệu (mức sàn) |
+| Mức chi Sang: Phú Quốc 12 triệu | xanh: chưa tới mức sang (~12,9 triệu) |
+| Vé đã mua 1,5 triệu / người, ngân sách 10 triệu cả đoàn | mốc 7 triệu |
+| Đã đặt chỗ ở / đi trong ngày | chỉ còn tiền ăn |
+

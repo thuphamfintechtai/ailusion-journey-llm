@@ -5,8 +5,9 @@ chỗ ở có giá) và find_places loại "Nhà hàng" (mỗi người, mọi q
 `limit`. Không lấy vài chỗ "phổ biến" nhất: toàn resort, nhà hàng đắt (Phú Quốc 2 người 4 ngày
 từng ra "tối thiểu 25 triệu").
 
-- Mỗi mức = phòng × số đêm × số phòng (2 người 1 phòng) + 1 bữa × số bữa bắt buộc × số người. Chưa
-  gồm vé, đi lại, phát sinh: ngân sách dưới mức này là chắc thiếu, không báo nhầm.
+- Mỗi mức = (phòng × số đêm × số phòng (2 người 1 phòng) + 1 bữa × số bữa bắt buộc × số người) ×
+  (1 + phát sinh `EXTRA_MID`, như tổng ước của lịch). Chưa gồm vé, đi lại: ngân sách dưới mức này là
+  chắc thiếu, không báo nhầm.
 - Tiết kiệm = trung vị nửa rẻ (p25), Thường gặp = trung vị, Sang = trung vị nửa đắt (p75).
 - Mức chi "Bình thường" so ngân sách với Thường gặp, "Sang, không vượt ngân sách" với Sang; dưới cả
   Tiết kiệm thì cảnh báo. "Không giới hạn" không so ngân sách: ghi tổng ước của lịch, kèm các mức
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..shared.form import TripForm, money, required_meals
+from ..shared.form import EXTRA_MID, TripForm, money, required_meals
 from ..shared.models import TripProfile
 
 # (mã, tên hiện cho user, phân vị trong `price_stats_vnd`, cách tính)
@@ -42,7 +43,8 @@ def price_levels(stays: dict[str, Any], food: dict[str, Any]) -> dict[str, dict[
 
 
 def level_costs(form: TripForm, profile: TripProfile) -> list[dict[str, Any]]:
-    """Phòng + ăn cả đoàn cả chuyến ở từng mức của điểm đến; chưa có mặt bằng giá thì []."""
+    """Phòng + ăn + phát sinh cả đoàn cả chuyến ở từng mức của điểm đến (`total`, chưa làm tròn:
+    dùng để so ngân sách); chưa có mặt bằng giá thì []."""
     levels = profile.price_levels
     if not levels:
         return []
@@ -56,16 +58,30 @@ def level_costs(form: TripForm, profile: TripProfile) -> list[dict[str, Any]]:
             "basis": basis,
             "stay_night": levels["stay"][q],
             "meal": levels["meal"][q],
-            "total": levels["stay"][q] * nights * rooms
-            + levels["meal"][q] * meals * form.group_size,
+            "total": round(
+                (levels["stay"][q] * nights * rooms + levels["meal"][q] * meals * form.group_size)
+                * (1 + EXTRA_MID)
+            ),
         }
         for key, label, q, basis in LEVELS
     ]
 
 
+def up(v: float) -> int:
+    """Tổng của một mức để hiện: làm tròn LÊN tới 100 nghìn (số ước, không giả chính xác tới từng
+    đồng; làm tròn thường thì 8,04 triệu thành "8.000.000 đ, hơn ngân sách 8.000.000 đ")."""
+    return int(-(-v // 100_000) * 100_000)
+
+
 def about(v: float) -> str:
-    """Tổng của một mức, làm tròn tới 100 nghìn: số ước, không giả chính xác tới từng đồng."""
-    return money(round(v / 100_000) * 100_000)
+    return money(up(v))
+
+
+def short(v: float) -> str:
+    """Giá 1 đêm / 1 bữa trong lời báo: 1.401.065 -> "1,4 triệu", 162.500 -> "163 nghìn"."""
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.1f}".replace(".", ",") + " triệu"
+    return f"{int(v / 1000 + 0.5)} nghìn"
 
 
 def budget_level(
@@ -83,11 +99,12 @@ def budget_level(
     base = {
         "style": form.spend_style,
         "budget": budget,
-        "levels": rows,
+        "levels": [{**r, "total": up(r["total"])} for r in rows],
         "scope": (
-            f"Phòng + ăn cho {form.group_size} người, {form.num_days} ngày {form.num_nights} đêm "
-            f"(chưa gồm vé, đi lại, phát sinh), theo giá {levels['stay']['count']} chỗ ở và "
-            f"{levels['meal']['count']} quán đã lưu ở {dest}."
+            f"Phòng + ăn + phát sinh {f'{EXTRA_MID * 100:g}'.replace('.', ',')}% cho "
+            f"{form.group_size} người, {form.num_days} ngày {form.num_nights} đêm (chưa gồm vé, đi "
+            f"lại), theo giá {levels['stay']['count']} chỗ ở và {levels['meal']['count']} quán đã "
+            f"lưu ở {dest}."
         ),
     }
     if form.spend_style == "unlimited":
@@ -115,8 +132,8 @@ def budget_level(
     if budget < saving["total"]:
         severity, title = "warn", f"Ngân sách thấp so với {dest}"
         text = (
-            f"Chỉ phòng và ăn ở mức tiết kiệm đã khoảng {about(saving['total'])}, hơn ngân sách "
-            f"{money(budget)}"
+            f"Chỉ phòng, ăn và phát sinh ở mức tiết kiệm đã khoảng {about(saving['total'])}, hơn "
+            f"ngân sách {money(budget)}"
             + (
                 f", chưa nói tới mức sang (khoảng {about(target['total'])}). Lịch giữ gần ngân "
                 "sách nhất có thể."
@@ -133,7 +150,7 @@ def budget_level(
             if luxury
             else f"Ngân sách dưới mức thường gặp ở {dest}"
         )
-        where = f"phòng {money(target['stay_night'])}/đêm, quán {money(target['meal'])}/người"
+        where = f"phòng {short(target['stay_night'])}/đêm, quán {short(target['meal'])}/người"
         text = (
             f"Mức sang ({where}) khoảng {about(target['total'])}; với ngân sách {money(budget)} "
             "lịch chọn chỗ ở, quán tốt nhất mà không vượt ngân sách."
@@ -151,8 +168,8 @@ def budget_level(
         "title": title,
         "text": text,
         "log": (
-            f"{title}: mức {shown['label'].lower()} khoảng {about(shown['total'])} (phòng + ăn), "
-            f"ngân sách {money(budget)}"
+            f"{title}: mức {shown['label'].lower()} khoảng {about(shown['total'])} (phòng + ăn + "
+            f"phát sinh), ngân sách {money(budget)}"
         ),
     }
 
