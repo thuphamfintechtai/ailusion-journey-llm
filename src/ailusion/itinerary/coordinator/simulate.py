@@ -51,6 +51,7 @@ from ..shared.form import (
     NAP_SPOT_KM,
     NEAR_MIN,
     TripForm,
+    busy_meals,
     day_allowance,
     hhmm,
     must_time_text,
@@ -731,7 +732,12 @@ def _simulate(
     khung bận bắt đầu trước khi xong chỗ kế tiếp thì đi lo việc bận trước, xong mới tới chỗ đó
     (đường từ chỗ bận ước BUSY_TRAVEL_MIN phút); khung bận sau chỗ cuối thì đi bận rồi về (giờ về
     theo giờ xong việc bận). Trước đây dòng thời gian không nhảy qua khung bận: bận 14:00–16:00
-    thì mọi chỗ buổi chiều "chạm giờ bận", lịch nào cũng hỏng."""
+    thì mọi chỗ buổi chiều "chạm giờ bận", lịch nào cũng hỏng.
+
+    Khung bận kéo tới / qua giờ kết thúc ngày (ngày cuối bận 11:00–13:00 mà 12:30 phải rời chỗ ở)
+    thì không dời chỗ nào ra sau: sau đó không còn giờ, chỗ không kịp xong trước giờ bận là lỗi
+    "chạm giờ bận" (bước bù chỗ không thêm, bước cắt bớt bỏ). Trước đây chỗ bị dời ra sau giờ bận
+    rồi về 16:54 — chỉ 1 lỗi "về trễ" dù dời bao nhiêu chỗ, nên bước bù chỗ còn nhét thêm."""
     blocked = _slots(window.blocked_slots)
     meal_only = _slots(window.meal_only_slots)
     end = to_minutes(window.day_end)
@@ -875,7 +881,7 @@ def _simulate(
             # Khung bận bắt đầu trước khi xong chỗ này: đi lo việc bận trước (kể cả khung rơi vào
             # lúc đang chờ chỗ này mở cửa), xong mới tới chỗ này.
             slot = next((s for s in pending if t <= s[0] < leave), None)
-            if slot is None:
+            if slot is None or slot[1] >= end:  # bận tới hết ngày: không dời ra sau
                 break
             pending.remove(slot)
             busy.append((k, slot[0], slot[1]))
@@ -951,6 +957,8 @@ def meal_time_issues(
     out = []
     windows = MEALS
     need = needed_meals(window) if window else set()
+    # Bữa trong giờ bận / dự tiệc: ăn ở đó, không bắt "đi suốt giờ ăn mà không có quán ăn".
+    covered = busy_meals(window) if window else set()
     # Bắt đầu ngày sớm (≤ 08:00): ăn sáng là việc đầu tiên, trước BREAKFAST_FIRST_BY.
     if (
         window
@@ -1009,7 +1017,7 @@ def meal_time_issues(
                 out.append(f"thiếu bữa {name} ({a}–{b}): ngày nào cũng phải đủ bữa")
             elif name in need:
                 out.append(f"thiếu bữa {name} ({a}–{b}): ngày nào cũng phải đủ bữa")
-            elif leave <= to_minutes(a) and back >= to_minutes(b):
+            elif name not in covered and leave <= to_minutes(a) and back >= to_minutes(b):
                 out.append(f"đi suốt giờ ăn {name} ({a}–{b}) mà không có quán ăn")
     return out
 

@@ -188,21 +188,27 @@ def required_meals(day_start: str, day_end: str) -> list[str]:
     return out
 
 
-def needed_meals(window: Any) -> set[str]:
-    """Bữa phải xếp quán của một ngày (`DayWindow`): `required_meals`, trừ bữa đang bận / dự
-    tiệc phủ ít nhất MEAL_MIN_OVERLAP phút của khung giờ ăn (tiệc cưới từ 16:45: ăn ở đó). Dùng
-    chung cho Planner, bước chia chỗ và bước kiểm lịch — trước đây Planner vẫn được bảo "bữa bắt
-    buộc: trưa" khi giờ bận phủ cả buổi trưa, xếp bữa trưa sau giờ bận rồi về trễ."""
-    need = set(required_meals(window.day_start, window.day_end))
+def busy_meals(window: Any) -> set[str]:
+    """Bữa có giờ bận / dự tiệc phủ ít nhất MEAL_MIN_OVERLAP phút của khung giờ ăn (`DayWindow`):
+    ăn ở đó / quanh đó (tiệc cưới từ 16:45), không xếp quán, không bắt "có quán ăn"."""
     busy = [
         (to_minutes(a), to_minutes(b))
         for a, b in (s.split("–") for s in [*window.blocked_slots, *window.meal_only_slots])
     ]
-    for name, (m0, m1) in MEALS.items():
-        a0, a1 = to_minutes(m0), to_minutes(m1)
-        if any(min(b1, a1) - max(b0, a0) >= MEAL_MIN_OVERLAP for b0, b1 in busy):
-            need.discard(name)
-    return need
+    return {
+        name
+        for name, (m0, m1) in MEALS.items()
+        if any(
+            min(b1, to_minutes(m1)) - max(b0, to_minutes(m0)) >= MEAL_MIN_OVERLAP for b0, b1 in busy
+        )
+    }
+
+
+def needed_meals(window: Any) -> set[str]:
+    """Bữa phải xếp quán của một ngày (`DayWindow`): `required_meals` trừ `busy_meals`. Dùng
+    chung cho Planner, bước chia chỗ và bước kiểm lịch — trước đây Planner vẫn được bảo "bữa bắt
+    buộc: trưa" khi giờ bận phủ cả buổi trưa, xếp bữa trưa sau giờ bận rồi về trễ."""
+    return set(required_meals(window.day_start, window.day_end)) - busy_meals(window)
 
 
 def _is_hhmm(value: str | None) -> bool:

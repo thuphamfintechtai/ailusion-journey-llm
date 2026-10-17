@@ -7,6 +7,7 @@ giờ bận"), ngày gần như không có giờ rảnh (tới nơi 19:45 / rờ
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from ailusion.itinerary.coordinator.simulate import (
     drop_bad_meals,
     meal_time_issues,
     simulate,
+    trim_visits,
 )
 from ailusion.itinerary.shared.form import (
     BUSY_TRAVEL_MIN,
@@ -270,6 +272,8 @@ def test_meal_covered_by_busy_is_not_asked_from_the_planner() -> None:
     }
     line = next(x for x in planner_input(state, [3]).splitlines() if x.startswith("# Ngày 3"))
     assert "bữa bắt buộc: sáng;" in line and "bữa trưa trong giờ bận, không xếp quán" in line
+    # Bận tới qua giờ rời chỗ ở 12:30: Planner được nói không xếp gì sau giờ bận.
+    assert "bận tới hết ngày: mọi chỗ phải xong trước 10:45" in line
 
 
 def test_busy_past_the_last_day_leave_time_is_noted() -> None:
@@ -293,3 +297,49 @@ def test_nap_spot_missing_is_noted() -> None:
     run = _run(busy, ["M1", "A", "B", "M2", "C", "M3"])
     assert run.rest is None
     assert not any("quanh quán trưa" in u for u in run.unchecked)
+
+
+# ---------------------------------------------------------------- lượt 3: bận tới hết ngày
+def test_busy_till_the_end_of_the_day_moves_nothing_after_it() -> None:
+    # Chạy thật: ngày cuối bận 11:00–13:00 (chặn 10:45–13:00) mà 12:30 phải rời chỗ ở. Chỗ không
+    # kịp xong trước giờ bận bị dời ra sau giờ bận, về 16:54 — chỉ 1 lỗi "về trễ" dù dời bao nhiêu
+    # chỗ, nên bước bù chỗ còn nhét thêm. Giờ: chỗ đó là lỗi "chạm giờ bận", không dời.
+    window = _window(end="12:30", blocked_slots=["10:45–13:00"])
+    fits = _run(window, ["M1", "A"])
+    assert fits.issues == []
+    assert fits.busy == [(2, to_minutes("10:45"), to_minutes("13:00"))]
+    assert fits.back == to_minutes("13:00") + BUSY_TRAVEL_MIN
+    late = _run(window, ["M1", "A", "B", "C"])
+    assert _hhmm(late, "B") == "10:15"
+    assert [i for i in late.issues if "chạm giờ bận" in i] == [
+        "B chạm giờ bận 10:45–13:00",
+        "C chạm giờ bận 10:45–13:00",
+    ]
+    # Bước cắt bớt bỏ tới khi lịch xong trước giờ bận.
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["M1", "A", "B", "C"])
+    trim_visits(plan, PLACES, MATRIX, window, [], [])
+    assert len(plan.stops) == 2 and _run(window, plan.stops).issues == []
+    # Giờ bận giữa ngày (sau đó còn giờ): vẫn đi bận trước rồi tới chỗ đó như cũ.
+    assert _hhmm(_run(_window(blocked_slots=["10:45–13:00"]), ["M1", "A", "B"]), "B") == "13:15"
+
+
+def test_staying_long_before_a_busy_till_the_end_runs_into_it() -> None:
+    # Ở lâu ở chỗ cuối trước giờ bận tới hết ngày: báo "chạm giờ bận". Trước đây dời chỗ đó ra
+    # sau giờ bận rồi báo "nếu ở lâu: về chỗ ở lúc 14:47, quá giờ kết thúc ngày 12:30".
+    places = {**PLACES, "L": replace(_place("L"), stay_high=120)}
+    matrix = {(a, b): 10.0 for a in [STAY, *places] for b in [STAY, *places] if a != b}
+    window = _window(end="12:30", blocked_slots=["10:45–13:00"])
+    plan = DayPlan(id="L", day=2, leave_stay="08:00", stops=["M1", "L"])
+    assert simulate(plan, places, matrix, window, [], long_stay=False).issues == []
+    long = simulate(plan, places, matrix, window, [], long_stay=True)
+    assert long.issues == ["L chạm giờ bận 10:45–13:00"]
+
+
+def test_lunch_inside_busy_needs_no_restaurant() -> None:
+    # Bận 11:00–13:00 giữa ngày dài: ăn trưa ở / quanh chỗ bận. Trước đây báo "đi suốt giờ ăn
+    # trưa mà không có quán ăn", bước đặt quán tự chèn quán trưa 13:15 sau giờ bận.
+    busy = _run(_window(blocked_slots=["10:45–13:00"]), ["M1", "A", "B", "C", "D", "M3"])
+    assert busy.issues == []
+    # Không bận thì đi chơi suốt buổi trưa mà không ăn vẫn là lỗi.
+    free = _run(_window(), ["M1", "A", "B", "C", "D", "E", "F", "M3"])
+    assert any("thiếu bữa trưa" in i for i in free.issues)
