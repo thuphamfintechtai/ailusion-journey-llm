@@ -14,6 +14,7 @@ import unicodedata
 
 from ..agents.budget import MAX_PRICE_FINDS, find_prices
 from ..agents.experience import MAX_PURPOSE_CHECKS, check_purposes
+from ..shared.companions import KID_UNFIT_REASON, avoid_match, avoided_foods, kid_unfit
 from ..shared.context import Ctx
 from ..shared.form import PURPOSE_KEYWORDS, need_text, needs_for, unknown_needs
 from ..shared.math import km
@@ -207,8 +208,12 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
 
     center = tuple(state["center"]) if state.get("center") else None
     removed: list[str] = []
+    # Người đi cùng (shared/companions.py): ghi chú riêng ở đầu kết quả, không lẫn vào "Bỏ N chỗ".
+    avoids = avoided_foods(form.needs_note)
+    kid_out: list[str] = []
+    food_out: dict[str, list[str]] = {}
     for pid, p in list(places.items()):
-        reason = None
+        reason, food = None, avoid_match(p, avoids)
         if p.hours and all(p.hours.get(d, "?") is None for d in range(1, form.num_days + 1)):
             reason = "đóng cửa mọi ngày của chuyến"
         elif lacking := [
@@ -225,6 +230,10 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
             reason = "chính là điểm đến, không phải một chỗ để ghé"
         elif center and km(center, (p.lat, p.lng)) > MAX_KM_FROM_CENTER:
             reason = f"cách trung tâm {form.destination} hơn {MAX_KM_FROM_CENTER} km"
+        elif form.kids_under_6 and kid_unfit(p):
+            reason = KID_UNFIT_REASON
+        elif food:
+            reason = f"{food[0]} ({food[1]})"
         if reason and p.must and not reason.startswith("đóng cửa"):
             # User tự chọn: vẫn giữ, chỉ nhắc điều cần biết.
             p.to_verify.append(f"Bạn chọn chỗ này dù {reason}")
@@ -232,7 +241,12 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
         if reason:
             if p.must:
                 notes.append(f"Không xếp được “{p.must_name or p.name}”: {reason}.")
-            removed.append(f"{p.name}: {reason}")
+            if reason == KID_UNFIT_REASON:
+                kid_out.append(p.name)
+            elif food and reason == f"{food[0]} ({food[1]})":
+                food_out.setdefault(food[0], []).append(f"{p.name} ({food[1]})")
+            else:
+                removed.append(f"{p.name}: {reason}")
             del places[pid]
             continue
         if unsure := unknown_needs(p.kind, p.need_status, profile.required_needs):
@@ -240,6 +254,23 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
     removed += [f"{r}: cùng một chỗ" for r in merge_duplicates(places)]
     if removed:
         notes.append(f"Bỏ {len(removed)} chỗ: " + "; ".join(removed[:6]))
+    if kid_out:
+        notes.append(
+            f"Đoàn có {form.kids_under_6} bé dưới 6 tuổi: bỏ {len(kid_out)} chỗ spa, massage, "
+            "quán bar, lặn biển, dù lượn (không hợp trẻ nhỏ) — " + ", ".join(kid_out[:5])
+        )
+    for phrase, words in avoids:
+        dropped = food_out.get(phrase, [])
+        if dropped:
+            tail = (
+                f"bỏ {len(dropped)} quán có món đó — {', '.join(dropped[:5])}; quán trong lịch "
+                "vẫn nên dặn trước khi gọi món"
+            )
+        elif words:
+            tail = "dặn quán trước khi gọi món"
+        else:
+            tail = "chưa lọc được quán theo món này — dặn quán trước khi gọi món"
+        notes.append(f"{phrase[:1].upper()}{phrase[1:]}: {tail}")
 
     # Chỗ khớp thứ user nhắc (sở thích + lời nhắn, VD "bún bò"): gắn từ khoá, bước sau ưu tiên.
     words = wanted_words(form.interests)

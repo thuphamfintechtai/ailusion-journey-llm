@@ -30,6 +30,7 @@ from .coordinator.levels import budget_level
 from .coordinator.profile import QUESTIONS
 from .coordinator.rank import budget_note
 from .coordinator.simulate import BUSY, simulate
+from .shared.companions import kid_tips
 from .shared.context import Ctx
 from .shared.fares import cars_for, city_of, compare, is_night
 from .shared.form import (
@@ -216,6 +217,11 @@ class Day(BaseModel):
     meal_notes: list[str] = Field(
         default_factory=list,
         description="Bữa không xếp / tuỳ chọn và lý do (VD bắt đầu 10:00 nên bữa sáng tuỳ chọn)",
+    )
+    kid_notes: list[str] = Field(
+        default_factory=list,
+        description="Đoàn có trẻ em: chỗ trong ngày cần lưu ý vì có trẻ và nên làm gì "
+        '("Bãi biển Nha Trang: trông trẻ sát khi xuống nước…")',
     )
     area_note: str | None = Field(
         None, description="Một câu về vùng đi của ngày: bán kính, xa nhất"
@@ -984,6 +990,7 @@ def _day(
         route_precision=((state.get("paths") or {}).get(plan.id) or {}).get("precision") or 5,
         area_note=idle or area_note([places[s.place_id] for s in run.stops], state, matrix or {}),
         meal_notes=day_meal_notes(state, plan.day),
+        kid_notes=kid_tips([places[s.place_id] for s in run.stops], form),
         lunar=str(to_lunar(date)),
         holiday=holiday_of(date, state.get("festival_dates")),
         crowd=crowd,  # type: ignore[arg-type]
@@ -1382,6 +1389,7 @@ def itinerary_markdown(resp: ItineraryResponse) -> str:
                 lines.append(f"- {item.start}–{item.end} ⏳ {item.name}")
             elif item.type == "depart":
                 lines.append(f"- {item.start} ✈️ {item.name}")
+        lines += [f"- 👶 {x}" for x in day.kid_notes]
         if not day.items and day.area_note:
             lines.append(f"- {day.area_note}")
         if day.issues:

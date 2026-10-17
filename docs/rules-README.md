@@ -55,6 +55,7 @@ Lỗi trả 422, `detail` là câu tiếng Việt (`form_error_text`, api/app.py
 | I4 | Không tự đặt số, không đổi đơn vị (giữ "1,5 triệu", "5 giờ chiều"; code tự đổi) |
 | I5 | Không chọn nhóm khách, không đoán điều user không nói |
 | I6 | Món ghi ở ô "Nhu cầu khác" (VD "bún bò") vào `interests` (`foods_in_note`); cụm có "không / ko / kiêng / tránh / dị ứng / hạn chế" ở bất kỳ đâu ("bé dị ứng hải sản") hay bắt đầu bằng "ít" là nhu cầu, không thành món — trước đây chỉ xét đầu cụm, "bé dị ứng hải sản" thành món lịch phải có; "tiết kiệm" không phải ưu tiên |
+| I7 | Mã "có món chay / thuần chay" chỉ nhận khi câu trích có chữ chay, vegetarian, vegan, không ăn thịt (`diet_said`) — chạy thật, Intake từng đổi "bé dị ứng hải sản" ra "có món chay" (mọi quán bị ghi "chưa rõ đáp ứng: có món chay") |
 
 ## 2. Nhóm khách và nhu cầu
 
@@ -73,6 +74,14 @@ Lỗi trả 422, `detail` là câu tiếng Việt (`form_error_text`, api/app.py
 `needs_care` = có trẻ dưới 6 / người từ 65 / xe lăn. Cột "tối về trước" của bảng A **không còn áp** — giờ về tối chỉ theo user.
 
 Chưa chọn "Đi cùng ai" (`group_of`): 1 người là một mình, có trẻ em / người từ 65 là gia đình — không hỏi lại H1 (trước đây hỏi, bấm "Gia đình có trẻ nhỏ" còn ghi đè 2 bé user nhập thành 1). Số phòng (`rooms_for`): 2 người một phòng, trẻ dưới 6 tuổi ngủ chung giường bố mẹ (khách sạn thường không tính thêm) — trước đây gia đình 2 người lớn + 2 bé dưới 6 tính 2 phòng; vé, bữa ăn của trẻ vẫn tính như người lớn (chưa có giá trẻ em).
+
+**Trẻ em và món phải tránh** (shared/companions.py; danh sách chữ và lời dặn là tự đặt):
+
+| Luật | Giá trị |
+|---|---|
+| Đoàn có trẻ dưới 6 tuổi | bỏ chỗ nhóm spa / massage / quán bar (`KID_UNFIT_GROUPS`) và trò mạo hiểm có chữ lặn biển, lặn bình, scuba, dù lượn, nhảy dù, zipline, đu dây (`KID_UNFIT_WORDS`), trừ chỗ user chọn; ghi riêng "Đoàn có 2 bé dưới 6 tuổi: bỏ 40 chỗ spa, massage, quán bar, lặn biển, dù lượn (không hợp trẻ nhỏ) — …" — chạy thật Nha Trang: phương án nào cũng có spa (mục đích "nghỉ ngơi" khớp spa), rồi "Lặn Biển LabiXa" |
+| Món phải tránh (ô "Nhu cầu khác": dị ứng / kiêng / tránh / không ăn …, `avoided_foods`) | bỏ quán có món đó trong tên / loại (`AVOID_WORDS`: "hải sản" gồm cua, ghẹ, tôm, mực, ốc, sò, hàu, cá…; khớp nguyên chữ có dấu, "cá" không khớp "cà phê"), ghi "Bé dị ứng hải sản: bỏ 3 quán có món đó — …; quán trong lịch vẫn nên dặn trước khi gọi món"; món không nhận ra (cay, đậu phộng) ghi "chưa lọc được quán theo món này — dặn quán trước khi gọi món" — chạy thật: "Bánh Canh Cua Linh" từng được xếp 2 lần |
+| Lời dặn vì có trẻ (`kid_tips` → `Day.kid_notes`) | đoàn có trẻ em: chỗ chơi trong ngày khớp thú (khỉ, vườn thú) · tắm bùn, suối nước nóng · bãi biển, hồ bơi, công viên nước · tàu ra đảo / vịnh / tour · thác, suối · núi, hang, bậc thang, cáp treo, hải đăng · chợ → "Bãi biển Nha Trang: trông trẻ sát khi xuống nước, mang phao tay cho trẻ, che nắng" (mỗi chỗ 1 lời dặn, dòng khớp đầu tiên); web hiện dưới lịch ngày, bản chữ chat in "👶" |
 
 **Nhu cầu bắt buộc theo loại chỗ** (`MEAL_NEEDS`, `needs_for`, shared/form.py): nhu cầu ăn uống — có món chay, thuần chay, ghế cao cho bé, thực đơn trẻ em, đồ ăn khuya, bữa sáng, đồ uống có cồn, phòng ăn riêng — chỉ xét ở **quán**; nhu cầu khác (lối / nhà vệ sinh xe lăn, chỗ đỗ ô tô, hợp trẻ em…) xét mọi chỗ. Trước đây bãi biển, bảo tàng, khách sạn cũng bị ghi "chưa rõ có đáp ứng nhu cầu bắt buộc" khi chọn "Có món chay".
 

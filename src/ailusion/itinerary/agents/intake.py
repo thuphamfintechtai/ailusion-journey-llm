@@ -8,6 +8,7 @@ nằm trong danh sách cho phép; ô user đã điền giữ nguyên. Chỉ ch�
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from pydantic import BaseModel, Field
 
@@ -245,6 +246,8 @@ def apply_extracted(
     # câu trích phải có trong lời nhắn hoặc ô "nhu cầu khác".
     needs = list(data.get("required_needs") or [])
     for n in extraction.required_needs:
+        if not diet_said(n.code, n.quote):
+            continue
         if n.code in NEED_CODES and quote_found(n.quote, said) and n.code not in needs:
             needs.append(n.code)
             kept.append({"field": "required_needs", "value": NEED_CODES[n.code], "quote": n.quote})
@@ -302,6 +305,17 @@ ALL_FILLABLE = (
     "must_visits",
     "required_needs",
 )
+
+
+# "Có món chay / thuần chay" chỉ khi câu trích nói chay: chạy thật, LLM từng đổi "bé dị ứng hải
+# sản" ra "có món chay" (mọi quán bị ghi "chưa rõ đáp ứng: có món chay", Planner ưu tiên quán chay).
+DIET_WORDS = re.compile(r"chay|vegetarian|vegan|không ăn thịt|ko ăn thịt|không ăn mặn")
+
+
+def diet_said(code: str, quote: str) -> bool:
+    return code not in ("vegetarian", "vegan") or bool(
+        DIET_WORDS.search(unicodedata.normalize("NFC", quote).lower())
+    )
 
 
 def foods_in_note(note: str) -> list[str]:
