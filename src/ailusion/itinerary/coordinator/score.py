@@ -20,6 +20,7 @@ from ..shared.form import (
     MEAL_STAY,
     NEAR_MIN,
     day_allowance,
+    meets_needs,
     money,
     needed_meals,
     required_meals,
@@ -812,7 +813,15 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         form.group_size,
     )
     ordered_visits = sorted(ordered_visits, key=lambda p: p.place_id in costly)
-    ordered_meals = sorted(ordered_meals, key=lambda p: p.place_id in costly)
+    # Quán có bằng chứng đáp ứng nhu cầu ăn uống bắt buộc (món chay, ghế cao cho bé) lên trước
+    # quán chưa rõ, để chắc vào danh sách đưa Planner; quán user chọn giữ chỗ.
+    ordered_meals = sorted(
+        ordered_meals,
+        key=lambda p: (
+            p.place_id in costly,
+            not (p.must or meets_needs(p.kind, p.need_status, profile.required_needs)),
+        ),
+    )
     n_meals = meal_points(want_visits, want_meals, room)
     shortlist = ordered_visits[: room - n_meals]
     shortlist += ordered_meals[:n_meals]

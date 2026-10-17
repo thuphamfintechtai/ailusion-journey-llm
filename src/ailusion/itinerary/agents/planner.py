@@ -19,6 +19,7 @@ from ..shared.form import (
     DINNER_FREE_MAX,
     GROUP_NAMES,
     LONG_WAIT_MAX,
+    MEAL_NEEDS,
     MIN_VISITS,
     MUST_LATE_MAX,
     NAP_MIN,
@@ -26,7 +27,9 @@ from ..shared.form import (
     day_allowance,
     hhmm,
     must_time_text,
+    need_text,
     needed_meals,
+    needs_for,
     required_meals,
     skipped_meals,
     to_minutes,
@@ -60,6 +63,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 8. Có dòng "Tiêu khoảng … mỗi ngày": các lịch của ngày có mức tiền khác nhau quanh con số đó — một lịch thấp hơn, một lịch cao hơn một chút (lịch thứ 3 nếu có thì sát con số), để hệ thống ghép được cả chuyến sát ngân sách. Không chọn toàn chỗ rẻ khi ngân sách còn dư nhiều, cũng không dồn chỗ đắt.
 9. Chỗ ghi "user nhắc: …" là đúng thứ user viết trong lời nhắn / sở thích (VD "bún bò"): mỗi thứ phải có ít nhất 1 lần trong mỗi phương án (rải ra vài ngày), nhưng MỖI NGÀY TỐI ĐA 1 BỮA cho cùng một món; quán thì vào đúng bữa trưa / tối, ngày vẫn phải có chỗ đi chơi.
 10. Ngày ghi "nghỉ trưa": sau bữa trưa hệ thống tự chèn {nap} phút nghỉ (chỗ ở / quán cà phê / khách sạn gần đó), không ghi vào `stops`. Buổi chiều sau đó tới bữa tối PHẢI có chỗ chơi: tới một chỗ phải chờ quá {wait} phút là lỗi; riêng bữa tối là điểm cuối ngày thì được trống tối đa {dinner_free} phút trước đó (thời gian tự do). "rảnh … phút" đã trừ giờ nghỉ trưa.
+11. Có dòng "# Đoàn cần (bắt buộc)": chỗ ghi "đáp ứng: …" là có bằng chứng đáp ứng nhu cầu đó — chọn những chỗ này trước (quán Q… cho nhu cầu ăn uống như món chay, ghế cao cho bé); chỗ ghi "chưa rõ: …" chỉ dùng khi không đủ chỗ "đáp ứng" cho các bữa / các lịch; KHÔNG dùng chỗ ghi "không có: …" trừ chỗ BẮT BUỘC.
 
 # Làm các lịch khác nhau thật sự
 
@@ -244,6 +248,28 @@ def must_text(p: Place) -> str:
     return " | BẮT BUỘC" + (f" | user muốn tới {when}" if when else "")
 
 
+def need_label(p: Place, needs: list[str]) -> str:
+    """Nhãn nhu cầu bắt buộc của một chỗ cho Planner: " | đáp ứng: có món chay | chưa rõ: ghế
+    cao cho bé". Chỗ thiếu hẳn ("no") đã bị lọc trước, trừ chỗ user chọn."""
+    mine = needs_for(p.kind, needs)
+    groups = {
+        "đáp ứng": [n for n in mine if p.need_status.get(n) == "yes"],
+        "không có": [n for n in mine if p.need_status.get(n) == "no"],
+        "chưa rõ": [n for n in mine if p.need_status.get(n, "unknown") == "unknown"],
+    }
+    return "".join(f" | {k}: {need_text(v)}" for k, v in groups.items() if v)
+
+
+def needs_line(needs: list[str]) -> str | None:
+    """Dòng "# Đoàn cần (bắt buộc)": nhu cầu ăn uống chỉ xét ở quán Q…, còn lại xét mọi chỗ."""
+    meal = [n for n in needs if n in MEAL_NEEDS]
+    other = [n for n in needs if n not in MEAL_NEEDS]
+    parts = ([f"{need_text(meal)} (quán Q…)"] if meal else []) + (
+        [f"{need_text(other)} (mọi chỗ)"] if other else []
+    )
+    return f"# Đoàn cần (bắt buộc): {'; '.join(parts)}" if parts else None
+
+
 def day_codes_of(state: dict[str, Any]) -> dict[int, list[str]]:
     """Ngày -> mã chỗ được dùng ngày đó (bước 8 chia sẵn). State cũ chưa chia thì ngày nào cũng
     dùng toàn bộ danh sách."""
@@ -340,6 +366,7 @@ def planner_input(
                 + (" | đi buổi tối" if p.kind != "meal" and opens_late(p, d.day) else "")
                 + must_text(p)
                 + (f" | user nhắc: {p.wanted}" if p.wanted and not p.must else "")
+                + need_label(p, profile.required_needs)
             )
         pairs = day_pairs(by_day[d.day], codes, matrix)
         if pairs:
@@ -349,6 +376,8 @@ def planner_input(
         f"\n# Nhóm khách: {profile.group} {GROUP_NAMES[profile.group]}; mục đích: "
         + (", ".join(PURPOSE_NAMES[p] for p in profile.purposes) or "chưa rõ")
     )
+    if line := needs_line(profile.required_needs):
+        lines.append(line)
     if form.needs_note.strip():
         lines.append(
             f"# Nhu cầu bắt buộc user tự ghi (phải tôn trọng khi chọn chỗ, quán): "

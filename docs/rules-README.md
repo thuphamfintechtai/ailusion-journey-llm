@@ -68,6 +68,16 @@ Lỗi trả 422, `detail` là câu tiếng Việt (`form_error_text`, api/app.py
 
 `needs_care` = có trẻ dưới 6 / người từ 65 / xe lăn. Cột "tối về trước" của bảng A **không còn áp** — giờ về tối chỉ theo user.
 
+**Nhu cầu bắt buộc theo loại chỗ** (`MEAL_NEEDS`, `needs_for`, shared/form.py): nhu cầu ăn uống — có món chay, thuần chay, ghế cao cho bé, thực đơn trẻ em, đồ ăn khuya, bữa sáng, đồ uống có cồn, phòng ăn riêng — chỉ xét ở **quán**; nhu cầu khác (lối / nhà vệ sinh xe lăn, chỗ đỗ ô tô, hợp trẻ em…) xét mọi chỗ. Trước đây bãi biển, bảo tàng, khách sạn cũng bị ghi "chưa rõ có đáp ứng nhu cầu bắt buộc" khi chọn "Có món chay".
+
+| Bước | Luật |
+|---|---|
+| Tìm | một lượt `find_places` theo mọi nhu cầu (ra quán đáp ứng hết), một lượt theo nhu cầu không phải ăn uống (chỗ chơi); `find_stays` chỉ gửi nhu cầu không phải ăn uống |
+| Lọc | chỗ Google ghi rõ "không có" → bỏ, ghi "Chùa Linh Ứng: thiếu nhu cầu bắt buộc: lối vào cho xe lăn"; chưa rõ → giữ, ghi "Hải sản Bé Mặn: chưa rõ đáp ứng: có món chay, ghế cao cho bé — nên hỏi trước" |
+| Danh sách đưa Planner | quán đáp ứng mọi nhu cầu ăn uống xếp trước quán chưa rõ (cùng mức giá); quán dự phòng để code bù bữa cũng vậy |
+| Planner | dòng "# Đoàn cần (bắt buộc): có món chay, ghế cao cho bé (quán Q…); lối vào cho xe lăn (mọi chỗ)"; mỗi chỗ ghi "đáp ứng: …", "chưa rõ: …", "không có: …"; luật 11: chọn chỗ "đáp ứng" trước, "chưa rõ" chỉ khi thiếu, không dùng "không có" trừ chỗ bắt buộc |
+| Chạy thử | chỗ "không có" nhu cầu áp cho loại của nó → lỗi "… thiếu nhu cầu bắt buộc: …" |
+
 **Nhóm khách** (`profile_trip`, coordinator/profile.py) — dòng đúng đầu tiên:
 
 | Luật | Điều kiện | Nhóm |
@@ -166,7 +176,7 @@ Tối đa `MAX_QUESTIONS` = 3 câu, theo thứ tự, mỗi câu kèm nút (`ques
 | Luật | |
 |---|---|
 | Đóng cửa mọi ngày của chuyến | bỏ |
-| Thiếu nhu cầu bắt buộc ("no") | bỏ; "chưa rõ" thì giữ + "nên hỏi trước" |
+| Thiếu nhu cầu bắt buộc ("no") | bỏ; "chưa rõ" thì giữ + "chưa rõ đáp ứng: <nhu cầu> — nên hỏi trước"; nhu cầu ăn uống chỉ xét ở quán (mục 2) |
 | Cảnh báo thiên tai mức đỏ | bỏ chỗ ngoài trời |
 | Cửa hàng mà chuyến không có mục đích mua sắm | bỏ |
 | Cách trung tâm > `MAX_KM_FROM_CENTER` 60 km | bỏ |

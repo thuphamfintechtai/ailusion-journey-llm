@@ -48,7 +48,7 @@ Q3 | Bún bò … | nhà hàng | 06:00–14:00 | 45–90 phút | 50.000 đ | 5 p
 Phút đi giữa các chỗ của ngày 1: D1-D2 6, D1-Q3 4, …   (mỗi chỗ chỉ PAIRS_PER_PLACE = 4 chỗ gần nhất)
 ```
 
-Cuối bài: nhóm khách + mục đích; nhu cầu bắt buộc user tự ghi (`needs_note`); `# Tiêu khoảng X đ mỗi ngày cho cả đoàn` (`day_target` = `day_allowance`, xem [budget-README.md](budget-README.md)).
+Mỗi chỗ kèm nhãn nhu cầu bắt buộc "đáp ứng / chưa rõ / không có: …" (`need_label`; nhu cầu ăn uống chỉ ở quán). Cuối bài: nhóm khách + mục đích; dòng "# Đoàn cần (bắt buộc)" (`needs_line`); nhu cầu bắt buộc user tự ghi (`needs_note`); `# Tiêu khoảng X đ mỗi ngày cho cả đoàn` (`day_target` = `day_allowance`, xem [budget-README.md](budget-README.md)).
 
 Nhãn trên từng chỗ: `hợp mục đích` · `đi buổi tối` (mở từ chiều muộn) · `BẮT BUỘC` (+ giờ user muốn tới) · `user nhắc: …`.
 
@@ -68,6 +68,7 @@ Nhãn trên từng chỗ: `hợp mục đích` · `đi buổi tối` (mở từ 
 | 8 | Các lịch trong ngày có mức tiền khác nhau quanh "Tiêu khoảng X": 1 lịch thấp hơn, 1 lịch cao hơn chút (lịch thứ 3 nếu có thì sát) |
 | 9 | Thứ "user nhắc" có ít nhất 1 lần mỗi phương án, mỗi ngày tối đa 1 bữa cùng món |
 | 10 | Ngày "nghỉ trưa": hệ thống tự chèn `NAP_MIN` (90) phút; chiều phải có chỗ chơi; chờ quá `LONG_WAIT_MAX` (45) phút là lỗi, riêng bữa tối cuối ngày được trống tới `DINNER_FREE_MAX` (150) phút |
+| 11 | Có dòng "Đoàn cần (bắt buộc)": chọn chỗ "đáp ứng: …" trước (quán cho món chay, ghế cao cho bé); "chưa rõ" chỉ khi thiếu; không dùng "không có" trừ chỗ bắt buộc |
 
 Các số trong prompt điền từ hằng số chung ở [shared/form.py](../src/ailusion/itinerary/shared/form.py) (`MIN_VISITS`, `NAP_MIN`, `LONG_WAIT_MAX`, `DINNER_FREE_MAX`) — cùng số bước chạy thử kiểm.
 

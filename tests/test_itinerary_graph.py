@@ -514,6 +514,107 @@ async def test_matrix_error_falls_back_to_estimates(
     assert not any("chưa có phút đi" in u for u in unchecked)
 
 
+# Trạng thái nhu cầu từng chỗ như MCP trả (find_places có `needs`, check_place_needs).
+NEED_STATUS: dict[str, dict[str, str]] = {
+    "f1": {"wheelchair": "no"},  # Hải sản Bé Mặn: món chay chưa rõ, không có lối xe lăn
+    "f2": {"vegetarian": "yes", "wheelchair": "yes"},  # Mì Quảng Bà Mua: có món chay
+    "v2": {"wheelchair": "yes", "wheelchair_toilet": "yes"},
+    "v3": {"wheelchair": "no"},  # Chùa Linh Ứng: nhiều bậc
+}
+
+
+@pytest.fixture
+def need_tools(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Tool giả trả trạng thái nhu cầu; trả về danh sách lời nhắn đưa Planner."""
+    real = _respond
+
+    def status(pid: str, needs: list[str]) -> dict[str, str]:
+        return {n: NEED_STATUS.get(pid, {}).get(n, "unknown") for n in needs}
+
+    def respond(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        out = real(name, args)
+        needs = args.get("needs") or []
+        if name == "find_places" and needs:
+            places = [{**p, "needs_status": status(p["place_id"], needs)} for p in out["places"]]
+            return {**out, "places": places}
+        if name == "check_place_needs":
+            results = [{"place_id": p, "needs_status": status(p, needs)} for p in args["places"]]
+            return {"status": "success", "results": results}
+        return out
+
+    monkeypatch.setattr(sys.modules[__name__], "_respond", respond)
+    prompts: list[str] = []
+    ask = FakeLLM.ainvoke
+
+    async def ainvoke(self: FakeLLM, messages: Any) -> Any:
+        if self.schema is PlannerOutput:
+            prompts.append(messages[1].content)
+        return await ask(self, messages)
+
+    monkeypatch.setattr(FakeLLM, "ainvoke", ainvoke)
+    return prompts
+
+
+def _meals(resp: Any) -> set[str]:
+    return {i.name for o in resp.options for d in o.days for i in d.items if i.type == "meal"}
+
+
+async def test_meal_needs_only_apply_to_restaurants(
+    llm_calls: list[str], need_tools: list[str]
+) -> None:
+    # Chọn "Có món chay" + "Ghế cao cho bé": trước đây Planner không biết gì, lịch toàn quán chưa
+    # rõ món chay; bãi biển, bảo tàng cũng bị ghi "chưa rõ có đáp ứng nhu cầu bắt buộc".
+    resp = await _run(
+        _form(
+            group_type="family",
+            group_size=3,
+            kids_under_6=1,
+            required_needs=["vegetarian", "high_chair"],
+        )
+    )
+    assert resp.status == "ok"
+    prompt = need_tools[0]
+    assert "# Đoàn cần (bắt buộc): có món chay, ghế cao cho bé (quán Q…)" in prompt
+    assert re.search(
+        r"^Q\d+ \| Mì Quảng Bà Mua .*\| đáp ứng: có món chay \| chưa rõ: ghế cao", prompt, re.M
+    )
+    assert re.search(
+        r"^Q\d+ \| Hải sản Bé Mặn .*\| chưa rõ: có món chay, ghế cao cho bé$", prompt, re.M
+    )
+    # Chỗ chơi không mang nhãn nhu cầu ăn uống.
+    assert not re.search(r"^D\d+ .*(món chay|ghế cao)", prompt, re.M)
+    # Quán có món chay được xếp trước (Planner giả lấy quán đầu danh sách).
+    assert "Mì Quảng Bà Mua" in _meals(resp)
+    # Cảnh báo ghi rõ nhu cầu nào, chỉ cho quán.
+    unsure = [n for n in resp.notes if "chưa rõ" in n]
+    assert unsure and all(
+        n.split(":")[0] in {"Hải sản Bé Mặn", "Bánh xèo Bà Dưỡng", "Mì Quảng Bà Mua"}
+        for n in unsure
+    )
+    assert any(
+        n == "Hải sản Bé Mặn: chưa rõ đáp ứng: có món chay, ghế cao cho bé — nên hỏi trước"
+        for n in resp.notes
+    )
+    # Chỗ ở không bị lọc theo món chay / ghế cao.
+    stays = [a for n, a in CALLS if n == "find_stays"]
+    assert stays and not any(a.get("needs") for a in stays)
+
+
+async def test_wheelchair_need_drops_places_that_say_no(
+    llm_calls: list[str], need_tools: list[str]
+) -> None:
+    resp = await _run(_form(group_type="family", group_size=3, wheelchair_users=1))
+    names = {i.name for o in resp.options for d in o.days for i in d.items}
+    assert "Chùa Linh Ứng" not in names and "Hải sản Bé Mặn" not in names
+    dropped = next(n for n in resp.notes if n.startswith("Bỏ"))
+    assert "Chùa Linh Ứng: thiếu nhu cầu bắt buộc: lối vào cho xe lăn" in dropped
+    prompt = need_tools[0]
+    assert "# Đoàn cần (bắt buộc): lối vào cho xe lăn, nhà vệ sinh cho xe lăn (mọi chỗ)" in prompt
+    assert re.search(
+        r"^D\d+ \| Bảo tàng Chăm .*\| đáp ứng: lối vào cho xe lăn, nhà vệ sinh", prompt, re.M
+    )
+
+
 async def test_missing_info_asks_once(llm_calls: list[str]) -> None:
     resp = await _run(_form(group_type=None, budget=None))
     assert resp.status == "need_info"
