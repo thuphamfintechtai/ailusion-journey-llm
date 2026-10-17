@@ -26,6 +26,7 @@ from ..shared.form import (
     day_allowance,
     hhmm,
     must_time_text,
+    needed_meals,
     required_meals,
     skipped_meals,
 )
@@ -296,7 +297,13 @@ def planner_input(
         if d.meal_only_slots:
             extra.append("chỉ ăn uống " + ", ".join(d.meal_only_slots))
         weather = weather_text(state, d.day)
-        meals = required_meals(d.day_start, d.day_end)
+        need = needed_meals(d)
+        meals = [m for m in required_meals(d.day_start, d.day_end) if m in need]
+        extra += [
+            f"bữa {m} trong giờ bận, không xếp quán"
+            for m in required_meals(d.day_start, d.day_end)
+            if m not in need
+        ]
         extra += skipped_meals(d.day_start, d.day_end)
         if d.nap:
             where = {

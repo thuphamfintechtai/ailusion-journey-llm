@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
+from ailusion.api.app import form_error_text
 from ailusion.itinerary.coordinator.profile import profile_trip
 from ailusion.itinerary.coordinator.score import capacity, idle_days
 from ailusion.itinerary.coordinator.simulate import (
@@ -183,3 +187,109 @@ def test_day_without_free_time_gets_no_places_and_an_empty_plan_is_fine() -> Non
     assert "không còn chỗ nào hợp lệ" in (
         check_plan(lazy, PLACES, MATRIX, profile.days[1], profile, form) or ""
     )
+
+
+# ---------------------------------------------------------------- lượt 2: giờ nhập va nhau
+def test_wrong_times_are_rejected_with_a_readable_message() -> None:
+    # Đi trong ngày mà giờ về trước giờ đến; giờ dậy sau giờ về tối: trước đây lập ra chuyến trống.
+    cases = [
+        (
+            {"end_date": "2026-10-24", "arrival_time": "14:00", "departure_time": "13:00"},
+            "Đi trong ngày: giờ khởi hành về (13:00) phải sau giờ đến (14:00)",
+        ),
+        (
+            {"end_date": "2026-10-24", "arrival_time": "evening", "departure_time": "morning"},
+            "Đi trong ngày: giờ khởi hành về (09:00) phải sau giờ đến (19:00)",
+        ),
+        (
+            {"wake_time": "21:00", "night_return_time": "20:45"},
+            "Giờ thức dậy (21:00) phải trước giờ về chỗ ở buổi tối (20:45)",
+        ),
+    ]
+    for over, text in cases:
+        with pytest.raises(ValidationError) as err:
+            _form(**over)
+        # Câu tới user (qua BE) không còn tiền tố "Value error, ".
+        assert form_error_text(err.value.errors()) == text
+    # Hợp lệ: đi trong ngày đến 09:00 về 18:00; đi chơi đêm thì không so giờ dậy với giờ về tối;
+    # giờ về tối ghi buổi sáng (01:00 = khuya) thì không so.
+    _form(end_date="2026-10-24", arrival_time="09:00", departure_time="18:00")
+    _form(wake_time="21:00", night_return_time="20:45", night_out=True)
+    _form(wake_time="09:00", night_return_time="01:00")
+
+
+def test_wrong_form_gets_a_422_with_the_readable_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from ailusion.api import itinerary as route
+    from ailusion.api.app import app
+
+    async def no_run(*_args: Any) -> Any:
+        raise AssertionError("form sai thì không được chạy pipeline")
+
+    monkeypatch.setattr(route, "run_itinerary", no_run)
+    client = TestClient(app)  # không `with`: không mở Redis / Postgres
+    body = {
+        "destination": "Đà Nẵng",
+        "start_date": "2026-10-24",
+        "end_date": "2026-10-24",
+        "group_size": 2,
+        "budget": 8_000_000,
+        "arrival_time": "14:00",
+        "departure_time": "13:00",
+    }
+    for url in ("/itinerary", "/chat/t1/plan"):
+        res = client.post(url, json=body)
+        assert res.status_code == 422
+        # BE chuyển nguyên `detail` (chuỗi) tới thẻ lỗi của web.
+        assert res.json() == {
+            "detail": "Đi trong ngày: giờ khởi hành về (13:00) phải sau giờ đến (14:00)"
+        }
+    res = client.post("/itinerary", json={**body, "departure_time": "18:00", "group_size": "hai"})
+    assert res.status_code == 422
+    assert res.json()["detail"].startswith("group_size: ")
+
+
+def test_meal_covered_by_busy_is_not_asked_from_the_planner() -> None:
+    from ailusion.itinerary.agents.planner import planner_input
+    from ailusion.itinerary.shared.form import needed_meals
+
+    # Ngày cuối bận 11:00–13:00 (phủ khung trưa): không bắt bữa trưa, Planner được nói rõ.
+    form = _form(busy_slots=[{"day": 3, "busy_start": "11:00", "busy_end": "13:00"}])
+    profile = profile_trip(form)
+    last = profile.days[2]
+    assert required_meals(last.day_start, last.day_end) == ["sáng", "trưa"]
+    assert needed_meals(last) == {"sáng"}
+    state = {
+        "form": form.model_dump(mode="json"),
+        "profile": profile.model_dump(mode="json"),
+        "places": {},
+        "codes": {},
+        "day_codes": {"1": [], "2": [], "3": []},
+        "matrix": {},
+    }
+    line = next(x for x in planner_input(state, [3]).splitlines() if x.startswith("# Ngày 3"))
+    assert "bữa bắt buộc: sáng;" in line and "bữa trưa trong giờ bận, không xếp quán" in line
+
+
+def test_busy_past_the_last_day_leave_time_is_noted() -> None:
+    from ailusion.itinerary.coordinator.profile import time_notes
+
+    form = _form(busy_slots=[{"day": 3, "busy_start": "11:00", "busy_end": "13:00"}])
+    notes = time_notes(form, profile_trip(form))
+    assert notes and "kết thúc sau giờ phải rời chỗ ở (12:30)" in notes[0]
+    fine = _form(busy_slots=[{"day": 3, "busy_start": "09:00", "busy_end": "10:00"}])
+    assert time_notes(fine, profile_trip(fine)) == []
+
+
+def test_nap_spot_missing_is_noted() -> None:
+    # Chọn "Khách sạn gần đó" mà không có khách sạn nào gần quán trưa: nghỉ ở chỗ ở, có ghi chú.
+    window = _window(nap=True, nap_at="hotel")
+    run = _run(window, ["M1", "A", "B", "M2", "C", "M3"])
+    assert run.rest and run.rest[3] == STAY
+    assert any("không có khách sạn trong 4 km quanh quán trưa" in u for u in run.unchecked)
+    # Giờ bận tới trong lúc nghỉ: không nghỉ, nên không ghi "nghỉ trưa ở chỗ ở".
+    busy = _window(nap=True, nap_at="hotel", blocked_slots=["13:15–15:00"])
+    run = _run(busy, ["M1", "A", "B", "M2", "C", "M3"])
+    assert run.rest is None
+    assert not any("quanh quán trưa" in u for u in run.unchecked)

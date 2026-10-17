@@ -16,7 +16,15 @@ from itertools import combinations
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import MEAL_STAY, NEAR_MIN, day_allowance, money, required_meals, to_minutes
+from ..shared.form import (
+    MEAL_STAY,
+    NEAR_MIN,
+    day_allowance,
+    money,
+    needed_meals,
+    required_meals,
+    to_minutes,
+)
 from ..shared.math import km, median, pareto_tiers
 from ..shared.models import (
     STAY,
@@ -212,7 +220,7 @@ def idle_days(days: list[DayWindow], caps: list[int], places: dict[str, Place]) 
         d.day
         for d, cap in zip(days, caps, strict=True)
         if cap == 0
-        and not required_meals(d.day_start, d.day_end)
+        and not needed_meals(d)
         and not any(p.must and p.must_day == d.day for p in places.values())
     ]
 

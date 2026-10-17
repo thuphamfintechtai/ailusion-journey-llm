@@ -188,6 +188,27 @@ def required_meals(day_start: str, day_end: str) -> list[str]:
     return out
 
 
+def needed_meals(window: Any) -> set[str]:
+    """Bữa phải xếp quán của một ngày (`DayWindow`): `required_meals`, trừ bữa đang bận / dự
+    tiệc phủ ít nhất MEAL_MIN_OVERLAP phút của khung giờ ăn (tiệc cưới từ 16:45: ăn ở đó). Dùng
+    chung cho Planner, bước chia chỗ và bước kiểm lịch — trước đây Planner vẫn được bảo "bữa bắt
+    buộc: trưa" khi giờ bận phủ cả buổi trưa, xếp bữa trưa sau giờ bận rồi về trễ."""
+    need = set(required_meals(window.day_start, window.day_end))
+    busy = [
+        (to_minutes(a), to_minutes(b))
+        for a, b in (s.split("–") for s in [*window.blocked_slots, *window.meal_only_slots])
+    ]
+    for name, (m0, m1) in MEALS.items():
+        a0, a1 = to_minutes(m0), to_minutes(m1)
+        if any(min(b1, a1) - max(b0, a0) >= MEAL_MIN_OVERLAP for b0, b1 in busy):
+            need.discard(name)
+    return need
+
+
+def _is_hhmm(value: str | None) -> bool:
+    return bool(value) and len(value) == 5 and value[2] == ":" and value.replace(":", "").isdigit()  # type: ignore[union-attr]
+
+
 def skipped_meals(day_start: str, day_end: str) -> list[str]:
     """Bữa không xếp và lý do (hiện cho user, để không ai tự thêm lại bữa không cần)."""
     a, b = to_minutes(day_start), to_minutes(day_end)
@@ -324,6 +345,23 @@ class TripForm(BaseModel):
                 raise ValueError(
                     f"{m.name}: chuyến chỉ có {self.num_days} ngày, không có ngày {m.day}"
                 )
+        # Giờ nhập sai: báo ngay (trước đây lập ra cả chuyến trống, không nói gì).
+        arrive, leave = clock(self.arrival_time), clock(self.departure_time)
+        if self.num_days == 1 and _is_hhmm(arrive) and _is_hhmm(leave):
+            if to_minutes(leave) <= to_minutes(arrive):  # type: ignore[arg-type]
+                raise ValueError(
+                    f"Đi trong ngày: giờ khởi hành về ({leave}) phải sau giờ đến ({arrive})"
+                )
+        wake, back = self.wake_time, self.night_return_time
+        # Giờ về tối nhập buổi sáng (01:00 = khuya) thì không so được: chỉ so khi về từ 12:00.
+        if (
+            not self.night_out
+            and _is_hhmm(wake)
+            and _is_hhmm(back)
+            and to_minutes(back) >= 12 * 60  # type: ignore[arg-type]
+            and to_minutes(wake) >= to_minutes(back)  # type: ignore[arg-type]
+        ):
+            raise ValueError(f"Giờ thức dậy ({wake}) phải trước giờ về chỗ ở buổi tối ({back})")
         return self
 
     @property

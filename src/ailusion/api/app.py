@@ -22,8 +22,9 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from ailusion.chat.graph import build_chat_graph
 from ailusion.core.agent_log import AgentLog
@@ -83,6 +84,26 @@ app = FastAPI(
 app.include_router(chat.router, dependencies=SERVICE_ONLY)
 app.include_router(itinerary.router, dependencies=SERVICE_ONLY)
 app.include_router(places.router, dependencies=SERVICE_ONLY)
+
+
+def form_error_text(errors: list[dict]) -> str:
+    """Lỗi kiểm form -> một câu đọc được cho user (BE chuyển nguyên câu này tới web): lỗi luật của
+    form ("Giờ thức dậy (21:00) phải trước giờ về chỗ ở buổi tối (20:45)") bỏ tiền tố "Value
+    error, " của Pydantic; lỗi kiểu dữ liệu ghi kèm tên trường."""
+    out = []
+    for e in errors:
+        msg = str(e.get("msg", "giá trị không hợp lệ"))
+        if e.get("type") == "value_error":
+            out.append(msg.removeprefix("Value error, "))
+            continue
+        where = ".".join(str(x) for x in e.get("loc", [])[1:])
+        out.append(f"{where}: {msg}" if where else msg)
+    return "; ".join(out) or "Form lập lộ trình không hợp lệ"
+
+
+@app.exception_handler(RequestValidationError)
+async def form_errors(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": form_error_text(exc.errors())})
 
 
 @app.get("/health")
