@@ -641,7 +641,8 @@ async def test_missing_info_asks_once(llm_calls: list[str]) -> None:
     resp = await _run(_form(group_type=None, budget=None))
     assert resp.status == "need_info"
     assert [q.id for q in resp.questions] == ["H1", "H3"]
-    assert resp.questions[0].choices[0].set == {"group_type": "solo"}
+    # "Một mình" sửa luôn số người (form 2 người mà chỉ đổi loại nhóm thì bị từ chối).
+    assert resp.questions[0].choices[0].set == {"group_type": "solo", "group_size": 1}
     assert not any(n == "search_hotels" for n, _ in CALLS)  # chưa tìm kiếm gì
 
 

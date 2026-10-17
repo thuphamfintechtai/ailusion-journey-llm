@@ -34,6 +34,7 @@ from ..shared.form import (
     TripForm,
     clock,
     daily_budget,
+    group_of,
     hhmm,
     must_window,
     to_minutes,
@@ -64,11 +65,12 @@ def profile_trip(
         rows.append(TABLE_A[2])
     if form.wheelchair_users:
         rows.append(TABLE_A[3])
-    if form.group_type == "couple":
+    party = group_of(form)  # chưa chọn "Đi cùng ai" thì suy từ số người
+    if party == "couple":
         rows.append(TABLE_A[4])
-    if form.group_type in ("friends", "colleagues"):
+    if party in ("friends", "colleagues"):
         rows.append(TABLE_A[5])
-    if form.group_type == "solo":
+    if party == "solo":
         rows.append(TABLE_A[6])
     needs_care = bool(form.kids_under_6 or form.seniors_65 or form.wheelchair_users)
     required = list(dict.fromkeys([*form.required_needs, *(n for r in rows for n in r[2])]))
@@ -215,7 +217,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "text": "Bạn đi cùng ai?",
         "field": "group_type",
         "choices": [
-            ["Một mình", {"group_type": "solo"}],
+            # Hỏi H1 thì form đang ≥ 2 người (1 người đã suy là một mình): chọn "Một mình" là
+            # sửa luôn số người, không thì form bị từ chối "Đi một mình nhưng số người là 2".
+            ["Một mình", {"group_type": "solo", "group_size": 1}],
             ["Cặp đôi", {"group_type": "couple"}],
             ["Bạn bè", {"group_type": "friends"}],
             ["Đồng nghiệp", {"group_type": "colleagues"}],
@@ -293,7 +297,7 @@ def questions_for(form: TripForm, profile: TripProfile) -> list[str]:
     # Chỉ hỏi khi chưa biết đi cùng ai. "Gia đình" mà không có trẻ em / người lớn tuổi là gia đình
     # toàn người lớn: form đã có ô số trẻ em, người lớn tuổi (để 0 = không có), hỏi lại thì user
     # chọn "Gia đình" xong vẫn bị hỏi "đi cùng ai".
-    if form.group_type is None:
+    if group_of(form) is None:  # 1 người / có trẻ em, người từ 65 tuổi: đã biết, không hỏi
         out.append("H1")
     if any(not s.busy_start for s in form.busy_slots):
         out.append("H5")

@@ -42,6 +42,7 @@ from .shared.form import (
     hhmm,
     money,
     must_time_text,
+    rooms_for,
     skipped_meals,
     to_minutes,
 )
@@ -627,11 +628,11 @@ def idle_note(plan: DayPlan, run: Run, form: TripForm, state: dict[str, Any]) ->
 
 
 def night_price(state: dict[str, Any], form: TripForm) -> int | None:
-    """Tiền 1 đêm cả đoàn (giá phòng × số phòng, 2 người 1 phòng); đã đặt chỗ thì 0."""
+    """Tiền 1 đêm cả đoàn (giá phòng × số phòng, `rooms_for`); đã đặt chỗ thì 0."""
     if form.stay_booked:
         return 0
     price = (state.get("stay") or {}).get("price")
-    return price * math.ceil(form.group_size / 2) if price else None
+    return price * rooms_for(form) if price else None
 
 
 def day_meal_notes(state: dict[str, Any], day: int) -> list[str]:

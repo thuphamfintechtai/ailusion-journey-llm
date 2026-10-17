@@ -72,7 +72,7 @@ Hằng số dùng chung, chỉ khai báo ở đây: `BUDGET_BAND = 0.05`, `EXTRA
 | `STAY_BUDGET_SHARE` | trần **50%** mốc; "sang, không vượt" nhắm luôn mức này (`stay_target_share`) | tự đặt |
 | `STAY_BAND` | tìm thêm phòng giá **60%–140%** mục tiêu / đêm / phòng (`stay_band_calls`) | tự đặt |
 | `STAY_PRICE_PICKS` / `STAY_PRICE_SLACK` | lấy 8 chỗ giá sát mục tiêu, cho lệch thêm 25% để được chỗ gần các điểm chơi hơn | tự đặt |
-| Số phòng | 2 người 1 phòng, làm tròn lên (`stay_cost`, rank.py) | tự đặt |
+| Số phòng | 2 người 1 phòng, làm tròn lên; trẻ dưới 6 tuổi ngủ chung giường bố mẹ, không tính (`rooms_for`, shared/form.py — dùng chung cho mọi bước) | tự đặt |
 
 Cách chọn:
 1. `usable_stays`: bỏ chỗ cách trung tâm > 30 km, bỏ chỗ tiền phòng cả chuyến > 50% mốc (`unlimited` thì không bỏ theo giá).
@@ -148,7 +148,7 @@ Phát sinh trên tab Chi phí: `EXTRA_PCT` 10–15%, ngày mưa / lễ +5% vào 
 | `EXTRA_PCT` | 10–15% phát sinh (+5% mưa / lễ, trần 25%) | shared/form.py, tabs.py |
 | `STAY_TARGET_SHARE` / `STAY_BUDGET_SHARE` | 35% / 50% | score.py |
 | `STAY_BAND` | 60–140% | search.py |
-| 2 người 1 phòng | | rank.py `stay_cost` |
+| 2 người 1 phòng, trẻ dưới 6 ngủ chung | | shared/form.py `rooms_for` |
 | `PRICE_BY_TYPE`, `VISIT_PRICE` 100k, `MEAL_PRICE` 150k | | score.py |
 | `BUS_FARE` | 8.000đ / người / lượt | tabs.py |
 
@@ -160,7 +160,7 @@ Phát sinh trên tab Chi phí: `EXTRA_PCT` 10–15%, ngày mưa / lễ +5% vào 
 
 ## 10. Mức chi của điểm đến ([coordinator/levels.py](../src/ailusion/itinerary/coordinator/levels.py))
 
-Mỗi mức = (phòng × số **đêm** × số phòng (2 người 1 phòng) + 1 bữa × số bữa bắt buộc (theo giờ rảnh từng ngày) × số người) × (1 + `EXTRA_MID`), cộng phát sinh như tổng ước của lịch. Chưa gồm vé, đi lại: ngân sách dưới mức này là chắc thiếu, không báo nhầm. Đã đặt chỗ ở thì chỉ còn tiền ăn. Số hiện ra làm tròn **lên** 100 nghìn (làm tròn thường từng ra "khoảng 8.000.000 đ, hơn ngân sách 8.000.000 đ"); so ngân sách bằng số chưa làm tròn.
+Mỗi mức = (phòng × số **đêm** × số phòng (`rooms_for`: 2 người 1 phòng, trẻ dưới 6 ngủ chung) + 1 bữa × số bữa bắt buộc (theo giờ rảnh từng ngày) × số người) × (1 + `EXTRA_MID`), cộng phát sinh như tổng ước của lịch. Chưa gồm vé, đi lại: ngân sách dưới mức này là chắc thiếu, không báo nhầm. Đã đặt chỗ ở thì chỉ còn tiền ăn. Số hiện ra làm tròn **lên** 100 nghìn (làm tròn thường từng ra "khoảng 8.000.000 đ, hơn ngân sách 8.000.000 đ"); so ngân sách bằng số chưa làm tròn.
 
 | Mức của điểm đến | Giá phòng / đêm, giá quán / người | Phú Quốc 2 người 4 ngày 3 đêm (DB 10/2026) |
 |---|---|---|

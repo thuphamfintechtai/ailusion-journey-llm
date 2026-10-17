@@ -26,6 +26,7 @@ from ..shared.form import (
     PURPOSE_KEYWORDS,
     TripForm,
     needs_for,
+    rooms_for,
 )
 from ..shared.math import km, median
 from ..shared.models import (
@@ -288,7 +289,7 @@ def stay_band_calls(
     if not trip_budget or not form.num_nights or form.stay_booked:
         return []
     needs = needs_for("stay", needs)
-    rooms = -(-form.group_size // 2)
+    rooms = rooms_for(form)
     target = trip_budget * stay_target_share(form) / form.num_nights / rooms
     return [
         (
@@ -318,7 +319,7 @@ def add_rest_spots(
             q.kind, q.rest_of, q.price = "rest", "cafe", CAFE_REST_PRICE
             places[pid] = q
     if form.nap == "hotel":
-        rooms = -(-form.group_size // 2)
+        rooms = rooms_for(form)
         for pid, s in stays.items():
             if s.price and pid not in places:
                 rest = copy.copy(s)

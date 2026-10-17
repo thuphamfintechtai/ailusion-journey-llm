@@ -23,7 +23,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..shared.form import EXTRA_MID, TripForm, budget_band, money, required_meals, trip_budget
+from ..shared.form import (
+    EXTRA_MID,
+    TripForm,
+    budget_band,
+    money,
+    required_meals,
+    rooms_for,
+    trip_budget,
+)
 from ..shared.models import TripProfile
 
 # (mã, tên hiện cho user, phân vị trong `price_stats_vnd`, cách tính)
@@ -51,7 +59,7 @@ def level_costs(form: TripForm, profile: TripProfile) -> list[dict[str, Any]]:
     levels = profile.price_levels
     if not levels:
         return []
-    rooms = -(-form.group_size // 2)
+    rooms = rooms_for(form)
     nights = 0 if form.stay_booked else form.num_nights
     meals = sum(len(required_meals(d.day_start, d.day_end)) for d in profile.days)
     return [

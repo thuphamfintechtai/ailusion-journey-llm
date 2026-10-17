@@ -24,6 +24,7 @@ from ..shared.form import (
     money,
     needed_meals,
     required_meals,
+    rooms_for,
     to_minutes,
 )
 from ..shared.math import km, median, pareto_tiers
@@ -592,7 +593,7 @@ def usable_stays(
     near = near or stays
     if not trip_budget or form.spend_style == "unlimited":
         return near, notes
-    rooms = -(-form.group_size // 2)
+    rooms = rooms_for(form)
     nights = max(1, form.num_nights)
     cap = trip_budget * STAY_BUDGET_SHARE
 
@@ -676,7 +677,7 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
                 if pair.get("duration_min") is not None and pair["from"] < len(candidates):
                     per.setdefault(pair["from"], []).append(pair["duration_min"])
             ride = {s.name: median(per.get(i, [])) for i, s in enumerate(candidates)}
-        rooms = -(-form.group_size // 2)
+        rooms = rooms_for(form)
 
         def vector(s: Place) -> list[float | None]:
             total = s.price * max(1, form.num_nights) * rooms if s.price else None

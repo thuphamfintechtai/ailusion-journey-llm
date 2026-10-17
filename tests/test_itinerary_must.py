@@ -282,7 +282,8 @@ def test_every_group_choice_is_accepted_without_asking_again() -> None:
     # Ô "Đi cùng ai" trên form (5 lựa chọn): chọn rồi thì không hỏi lại H1, kể cả "Gia đình" để
     # trống số trẻ em / người lớn tuổi.
     for group in ("solo", "couple", "friends", "colleagues", "family"):
-        p = profile_trip(_form(group_type=group, **base))
+        size = 1 if group == "solo" else 2  # "Một mình" mà 2 người: form bị từ chối
+        p = profile_trip(_form(group_type=group, group_size=size, **base))
         assert "H1" not in p.questions, group
     # Câu hỏi lại H1: mọi lựa chọn đều trả lời xong câu hỏi, có lựa chọn gia đình toàn người lớn.
     choices = dict(QUESTIONS["H1"]["choices"])
