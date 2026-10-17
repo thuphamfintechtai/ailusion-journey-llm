@@ -101,7 +101,20 @@ def test_form_fields_the_user_filled_are_kept() -> None:
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("5 giờ chiều", "17:00"), ("17h30", "17:30"), ("9:15", "09:15"), ("buổi sáng", None)],
+    [
+        ("5 giờ chiều", "17:00"),
+        ("17h30", "17:30"),
+        ("9:15", "09:15"),
+        ("buổi sáng", None),
+        # "đêm" / "khuya": trước đây "11 giờ đêm" thành 11:00 sáng. Nửa đêm là 00:00 (giờ xong
+        # lịch bận thì là hết ngày).
+        ("11 giờ đêm", "23:00"),
+        ("10h khuya", "22:00"),
+        ("2 giờ đêm", "02:00"),
+        ("12 giờ đêm", "00:00"),
+        ("24h", "00:00"),
+        ("12 giờ trưa", "12:00"),
+    ],
 )
 def test_parse_clock(text: str, expected: str | None) -> None:
     assert parse_clock(text) == expected

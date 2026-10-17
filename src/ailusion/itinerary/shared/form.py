@@ -312,6 +312,18 @@ class BusySlot(BaseModel):
     one_person: bool = False
     place: str | None = Field(None, description="Chỗ bận, để hỏi phút đi (get_route)")
 
+    def end_minutes(self) -> int | None:
+        """Giờ xong (phút trong ngày). Không sau giờ bắt đầu (09:00–00:00, 22:00–01:00) là qua nửa
+        đêm: bận tới hết ngày (24 * 60). Ô giờ trên web kiểu 24 giờ nên "tới nửa đêm" là 00:00 —
+        trước đây thành 0 phút, khung bận bị coi là ngoài giờ của ngày và bỏ đi, lịch vẫn xếp chỗ
+        trong giờ bận (chạy thật Đà Nẵng: bận ngày 1 09:00–00:00)."""
+        if not self.busy_end:
+            return None
+        end = to_minutes(self.busy_end)
+        if self.busy_start and end <= to_minutes(self.busy_start):
+            return 24 * 60
+        return end
+
 
 # Địa điểm user muốn đi: có giờ buổi thì phải bắt đầu ở chỗ đó trong khung này.
 MUST_BUCKETS = {

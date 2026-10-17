@@ -127,7 +127,10 @@ def kid_unfit(p: Place) -> bool:
 
 
 # Chỗ chơi cần lưu ý khi đi cùng trẻ -> nên làm gì (tự đặt). Xét theo thứ tự, mỗi chỗ 1 lời dặn
-# (dòng đầu khớp): "Khu du lịch Đảo Khỉ" là khỉ trước, đi tàu sau.
+# (dòng đầu khớp): "Khu du lịch Đảo Khỉ" là khỉ trước, đi tàu sau. Khớp trên "loại\ntên" (`^` là
+# đầu loại / đầu tên): "đảo" chỉ tính khi tên là một hòn đảo / tour ra đảo ("Đảo Hòn Thơm", "Tour
+# 4 đảo", loại "Đảo") — chạy thật Phú Quốc: "Chùa Bồ Đề Hải Đảo", "Làng Trầm Hương Đảo Yến" bị dặn
+# "đi tàu / cano".
 KID_TIPS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"khỉ|monkey|vườn thú|thảo cầm viên|safari|\bzoo\b"),
      "thú có thể giật đồ, cào — giữ trẻ sát bên, không cho trẻ tự cho thú ăn"),
@@ -135,7 +138,8 @@ KID_TIPS: list[tuple[re.Pattern[str], str]] = [
      "hỏi trước khu tắm, nhiệt độ nước cho trẻ em; mang đồ thay"),
     (re.compile(r"bãi biển|bãi tắm|beach|hồ bơi|bể bơi|swimming pool|công viên nước|water park"),
      "trông trẻ sát khi xuống nước, mang phao tay cho trẻ, che nắng"),
-    (re.compile(r"đảo|cano|ca nô|du thuyền|thuyền|tàu|\btour\b|vịnh|lặn|snorkel"),
+    (re.compile(r"(?m)^(?:khu du lịch |tour |\d+ )?(?:đảo|hòn|cù lao)\b|\b(?:ra|tour|\d+) đảo\b"
+                r"|cano|ca nô|du thuyền|thuyền|tàu|\btour\b|vịnh|lặn|snorkel"),
      "đi tàu / cano — hỏi trước có áo phao cỡ trẻ em"),
     (re.compile(r"thác|suối|ghềnh"), "đá trơn, nước chảy — nắm tay trẻ"),
     (re.compile(r"\bnúi\b|\bđèo\b|\bhang\b|\bđộng\b|leo|bậc thang|cáp treo|hải đăng"),
@@ -153,7 +157,8 @@ def kid_tips(places: list[Place], form: TripForm) -> list[str]:
     for p in places:
         if p.kind != "visit":
             continue
-        tip = next((t for pattern, t in KID_TIPS if pattern.search(p.text)), None)
+        text = unicodedata.normalize("NFC", f"{p.category}\n{p.name}").lower()
+        tip = next((t for pattern, t in KID_TIPS if pattern.search(text)), None)
         if tip:
             out.append(f"{p.name}: {tip}")
     return list(dict.fromkeys(out))

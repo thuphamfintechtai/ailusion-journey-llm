@@ -592,7 +592,8 @@ def user_busy(form: TripForm, day: int, a: int, b: int) -> BusySlot | None:
     """Lịch bận user nhập ứng với khung chặn (a, b) của ngày: cùng giờ xong, không thì giờ bắt
     đầu gần nhất (khung chặn bắt đầu sớm hơn giờ user nhập một quãng đường tới chỗ bận)."""
     slots = [s for s in form.busy_slots if s.day == day and s.busy_start and not s.one_person]
-    same = [s for s in slots if s.busy_end and to_minutes(s.busy_end) == b]
+    # So theo giờ đã làm tròn như khung chặn (bận tới nửa đêm: khung chặn ghi 23:59).
+    same = [s for s in slots if (e := s.end_minutes()) is not None and hhmm(e) == hhmm(b)]
     if same:
         return same[0]
     return min(slots, key=lambda s: abs(to_minutes(s.busy_start or "00:00") - a), default=None)

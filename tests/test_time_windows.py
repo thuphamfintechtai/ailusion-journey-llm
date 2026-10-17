@@ -335,6 +335,23 @@ def test_staying_long_before_a_busy_till_the_end_runs_into_it() -> None:
     assert long.issues == ["L chạm giờ bận 10:45–13:00"]
 
 
+def test_busy_till_midnight_blocks_the_rest_of_the_day() -> None:
+    # Chạy thật Đà Nẵng: ngày 1 bận 09:00–00:00 (ô giờ trên web kiểu 24 giờ, "tới nửa đêm" là
+    # 00:00). Trước đây 00:00 thành 0 phút: khung bận bị coi là ngoài giờ của ngày và bỏ đi, ngày 1
+    # vẫn xếp chỗ 08:56–19:36.
+    form = _form(busy_slots=[{"day": 1, "busy_start": "09:00", "busy_end": "00:00"}])
+    day1 = profile_trip(form).days[0]
+    assert (day1.blocked_slots, day1.free_minutes) == (["08:45–23:59"], 45)
+    # Qua nửa đêm (19:00–01:00) cũng là bận tới hết ngày.
+    late = _form(busy_slots=[{"day": 2, "busy_start": "19:00", "busy_end": "01:00"}])
+    assert profile_trip(late).days[1].blocked_slots == ["18:45–23:59"]
+    # Ngày cuối bận tới nửa đêm mà phải rời chỗ ở 12:30: ghi chú như bận quá giờ rời chỗ ở.
+    from ailusion.itinerary.coordinator.profile import time_notes
+
+    last = _form(busy_slots=[{"day": 3, "busy_start": "10:00", "busy_end": "00:00"}])
+    assert "kết thúc sau giờ phải rời chỗ ở (12:30)" in time_notes(last, profile_trip(last))[0]
+
+
 def test_lunch_inside_busy_needs_no_restaurant() -> None:
     # Bận 11:00–13:00 giữa ngày dài: ăn trưa ở / quanh chỗ bận. Trước đây báo "đi suốt giờ ăn
     # trưa mà không có quán ăn", bước đặt quán tự chèn quán trưa 13:15 sau giờ bận.
