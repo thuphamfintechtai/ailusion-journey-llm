@@ -258,6 +258,9 @@ class Run:
     # Nghỉ trưa: (sau chỗ thứ k trong `stops`, giờ tới chỗ nghỉ, giờ rời, chỗ nghỉ: STAY hoặc
     # place_id quán cà phê / khách sạn) — phút trong ngày.
     rest: tuple[int, int, int, str] | None = None
+    # Khung bận của user đã chèn vào dòng thời gian: (trước chỗ thứ k trong `stops` — k = số chỗ
+    # thì sau chỗ cuối, bắt đầu, kết thúc) — phút trong ngày, bắt đầu đã gồm đường tới chỗ bận.
+    busy: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -331,6 +334,7 @@ class ItineraryState(TypedDict, total=False):
     codes: dict[str, str]  # mã ngắn -> place_id
     day_codes: dict[str, list[str]]  # ngày -> mã chỗ Planner được dùng ngày đó (bước 8)
     must_codes: dict[str, list[str]]  # ngày -> mã chỗ user chỉ định, mọi lịch ngày đó phải có
+    idle_days: list[int]  # ngày không xếp lịch (không đủ giờ cho 1 chỗ, không bữa bắt buộc)
     matrix: dict[str, float]  # "from|to" -> phút
     km_matrix: dict[str, float]  # "from|to" -> km đường đi (cùng lượt distance_matrix)
     plans: dict[str, dict[str, Any]]  # plan_id -> DayPlan dạng dict

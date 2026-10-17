@@ -340,6 +340,26 @@ async def test_budget_levels_reach_the_response(llm_calls: list[str]) -> None:
     )
 
 
+async def test_time_window_cases_reach_the_response(llm_calls: list[str]) -> None:
+    # Tới nơi 21:00 (về chỗ ở trước 22:00): ngày 1 không xếp gì, ghi rõ vì sao — trước đây lịch
+    # trống bị báo "dữ liệu điểm đến thiếu".
+    late = await _run(_form(arrival_time="21:00"))
+    day1 = late.options[0].days[0]
+    assert late.status == "ok" and day1.items == [] and day1.status == "ok"
+    assert "Không xếp chỗ đi" in (day1.area_note or "")
+    # Bận ngày 2 14:00–16:00: lịch hiện mục "Lịch bận" đúng giờ user nhập, không còn lỗi chạm
+    # giờ bận.
+    busy = await _run(
+        _form(
+            busy_slots=[{"day": 2, "busy_start": "14:00", "busy_end": "16:00", "place": "Hội nghị"}]
+        )
+    )
+    day2 = busy.options[0].days[1]
+    items = [(i.type, i.start, i.end, i.name) for i in day2.items if i.type == "busy"]
+    assert items == [("busy", "14:00", "16:00", "Lịch bận: Hội nghị")]
+    assert not any("chạm giờ bận" in x for x in day2.issues)
+
+
 async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None:
     resp = await _run(_form())
     assert resp.status == "ok"
