@@ -133,13 +133,18 @@ class Extraction(BaseModel):
 
 
 def parse_clock(text: str) -> str | None:
-    """ "5 giờ chiều" -> "17:00", "17h30" -> "17:30", "9:15" -> "09:15", "sáng" -> None."""
+    """ "5 giờ chiều" -> "17:00", "17h30" -> "17:30", "9:15" -> "09:15", "sáng" -> None; "11 giờ
+    đêm" -> "23:00", "2 giờ đêm" -> "02:00", "12 giờ đêm" / "24h" -> "00:00" (giờ xong lịch bận
+    thì là hết ngày, `BusySlot.end_minutes`). Trước đây "11 giờ đêm" thành 11:00 sáng."""
     t = norm(text)
     m = re.search(r"(\d{1,2})\s*(?:h|giờ|g|:)\s*(\d{2})?", t)
     if not m:
         return None
     h, mi = int(m.group(1)), int(m.group(2) or 0)
-    if any(w in t for w in ("chiều", "tối", "pm")) and h < 12:
+    late = any(w in t for w in ("đêm", "khuya"))
+    if h == 24 or (h == 12 and (late or "tối" in t)):
+        h = 0
+    elif h < 12 and (any(w in t for w in ("chiều", "tối", "pm")) or (late and h >= 6)):
         h += 12
     if h > 23 or mi > 59:
         return None

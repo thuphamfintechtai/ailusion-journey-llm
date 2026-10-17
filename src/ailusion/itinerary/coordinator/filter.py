@@ -259,6 +259,13 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
             f"Đoàn có {form.kids_under_6} bé dưới 6 tuổi: bỏ {len(kid_out)} chỗ spa, massage, "
             "quán bar, lặn biển, dù lượn (không hợp trẻ nhỏ) — " + ", ".join(kid_out[:5])
         )
+    elif form.kids_under_6:
+        # Không phải bỏ chỗ nào vẫn ghi, để thấy lịch đã tính tới trẻ nhỏ (chạy thật Phú Quốc 1 bé
+        # dưới 6: đầu kết quả không có dòng nào về trẻ).
+        notes.append(
+            f"Đoàn có {form.kids_under_6} bé dưới 6 tuổi: lịch không xếp spa, massage, quán bar, "
+            "lặn biển, dù lượn (không hợp trẻ nhỏ) — chỗ tìm được không có chỗ nào như vậy"
+        )
     for phrase, words in avoids:
         dropped = food_out.get(phrase, [])
         if dropped:

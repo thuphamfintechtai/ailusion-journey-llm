@@ -76,6 +76,20 @@ def test_kid_tips_say_why_and_what_to_do() -> None:
         "trông trẻ sát khi xuống nước, mang phao tay cho trẻ, che nắng",
         "dốc, nhiều bậc — mang địu (xe đẩy khó đi)",
     ]
+    # "Đảo" giữa tên không phải đi tàu (chạy thật Phú Quốc: "Chùa Bồ Đề Hải Đảo", "Làng Trầm Hương
+    # Đảo Yến" bị dặn "đi tàu / cano"); tên là một hòn đảo, tour ra đảo, du thuyền thì vẫn dặn.
+    islands = [
+        _place("Chùa Bồ Đề Hải Đảo - Phú Quốc", "Chùa", "visit"),
+        _place("Làng Trầm Hương Đảo Yến", "Điểm thu hút khách du lịch", "visit"),
+        _place("Hòn Mun", "Đảo", "visit"),
+        _place("Tour 4 đảo Nha Trang", "Công ty lữ hành", "visit"),
+        _place("Du thuyền Nautilus", "Điểm thu hút khách du lịch", "visit"),
+    ]
+    assert [x.split(": ", 1)[0] for x in kid_tips(islands, form)] == [
+        "Hòn Mun",
+        "Tour 4 đảo Nha Trang",
+        "Du thuyền Nautilus",
+    ]
 
 
 def test_places_unfit_for_kids_under_6() -> None:

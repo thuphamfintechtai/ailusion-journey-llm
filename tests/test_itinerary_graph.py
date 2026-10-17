@@ -370,6 +370,16 @@ async def test_kids_skip_unfit_places_and_the_food_they_are_allergic_to(
     assert "👶 Bãi biển Mỹ Khê" in itinerary_markdown(resp)
 
 
+async def test_kids_under_6_are_noted_even_when_nothing_is_dropped(llm_calls: list[str]) -> None:
+    # Chạy thật Phú Quốc (1 bé dưới 6): không có spa / quán bar nào phải bỏ thì đầu kết quả không
+    # có dòng nào về trẻ, như thể lịch chưa tính tới bé.
+    resp = await _run(_form(group_size=3, group_type="family", kids_under_6=1))
+    assert (
+        "Đoàn có 1 bé dưới 6 tuổi: lịch không xếp spa, massage, quán bar, lặn biển, dù lượn "
+        "(không hợp trẻ nhỏ) — chỗ tìm được không có chỗ nào như vậy"
+    ) in resp.notes
+
+
 async def test_time_window_cases_reach_the_response(llm_calls: list[str]) -> None:
     # Tới nơi 21:00 (về chỗ ở trước 22:00): ngày 1 không xếp gì, ghi rõ vì sao — trước đây lịch
     # trống bị báo "dữ liệu điểm đến thiếu".
@@ -423,6 +433,14 @@ async def test_time_window_cases_reach_the_response(llm_calls: list[str]) -> Non
         "12:15",
         f"Về {early.stay.name}, kết thúc chuyến",
     )
+    # Ngày 1 bận 09:00–00:00 (ô giờ trên web kiểu 24 giờ: tới nửa đêm là 00:00): sau 08:45 cả ngày
+    # dành cho giờ bận. Chạy thật Đà Nẵng: 00:00 thành 0 phút, giờ bận bị bỏ, ngày 1 vẫn xếp chỗ
+    # 08:56–19:36.
+    night = await _run(_form(busy_slots=[{"day": 1, "busy_start": "09:00", "busy_end": "00:00"}]))
+    assert night.profile and night.profile.days[0].blocked_slots == ["08:45–23:59"]
+    for option in night.options:
+        items = [(i.type, i.start, i.end) for i in option.days[0].items if i.type != "start"]
+        assert items == [("busy", "09:00", "00:00"), ("back", "23:59", "23:59")]
 
 
 async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None:

@@ -122,11 +122,12 @@ def profile_trip(
             go = travel_to.get(f"busy:{d}", BUSY_TRAVEL_MIN)
             b_start = max(start, to_minutes(slot.busy_start) - go)
             # Bận hẳn ngoài giờ của ngày (bận 07:00–09:00 mà tới nơi buổi chiều): không chặn gì —
-            # trước đây ra khung ngược "14:45–09:00" đưa Planner.
-            if b_start >= end or (slot.busy_end and to_minutes(slot.busy_end) <= start):
+            # trước đây ra khung ngược "14:45–09:00" đưa Planner. Bận tới nửa đêm (09:00–00:00):
+            # chặn tới hết ngày (`end_minutes`).
+            b_end = slot.end_minutes()
+            if b_start >= end or (b_end is not None and b_end <= start):
                 continue
-            if slot.busy_end:
-                b_end = to_minutes(slot.busy_end)
+            if b_end is not None:
                 blocked.append(f"{hhmm(b_start)}–{hhmm(b_end)}")
                 busy_minutes += max(0, min(b_end, end) - b_start)
             else:
@@ -203,7 +204,7 @@ def time_notes(form: TripForm, profile: TripProfile) -> list[str]:
     for slot in form.busy_slots:
         if slot.day != last.day or slot.one_person or not slot.busy_start or not slot.busy_end:
             continue
-        if to_minutes(slot.busy_end) > to_minutes(last.day_end):
+        if (slot.end_minutes() or 0) > to_minutes(last.day_end):
             out.append(
                 f"Lịch bận ngày {last.day} ({slot.busy_start}–{slot.busy_end}) kết thúc sau giờ "
                 f"phải rời chỗ ở ({last.day_end}) để kịp chuyến về: lịch ngày này chỉ xếp tới "
