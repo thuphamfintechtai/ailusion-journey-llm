@@ -340,7 +340,7 @@ class Level(BaseModel):
 class BudgetLevel(BaseModel):
     """Ngân sách so với mặt bằng giá của điểm đến, hiện ở đầu kết quả."""
 
-    kind: Literal["low", "below", "surplus", "unlimited"] = Field(
+    kind: Literal["low", "below", "surplus", "unlimited", "unknown"] = Field(
         description="low: dưới cả mức tiết kiệm; below: dưới mức của mức chi đã chọn; surplus: "
         "ngân sách dư (lịch tiêu dưới khoảng ngân sách, ngân sách trên cả mức sang); unlimited"
     )
@@ -1326,6 +1326,8 @@ def request_text(form: TripForm) -> str:
             else (f"từ {_money(low)}" if low else f"tối đa {_money(high)}")
         )
         lines.append(f"Ngân sách {span} {unit}.")
+    elif form.budget_unknown:
+        lines.append("Ngân sách: chưa biết — lên theo mức chi thường gặp.")
     elif form.budget:
         # Đơn vị "mỗi người": ghi luôn số cả đoàn cả chuyến (bấm nhầm thì thấy ngay).
         days = form.num_days if form.budget_unit == "person_day" else 1

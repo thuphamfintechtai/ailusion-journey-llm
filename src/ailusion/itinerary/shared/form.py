@@ -370,6 +370,9 @@ class TripForm(BaseModel):
     # thay vì ±BUDGET_BAND quanh một số user không nói.
     budget_min: int | None = Field(None, ge=0, description="VND")
     budget_unit: BudgetUnit = "group_trip"
+    # Ô ngân sách chọn "Không giới hạn": user CHƯA BIẾT bao nhiêu (không phải "chi thoải mái",
+    # khác mức chi "unlimited"): không hỏi lại H3, chỗ ở theo giá thường gặp ở điểm đến.
+    budget_unknown: bool = False
     stay_booked: str | None = None
     prepaid_tickets: int = Field(0, ge=0, description="Tiền vé đi về đã mua, mỗi người")
     travel_mode: TravelMode | None = None

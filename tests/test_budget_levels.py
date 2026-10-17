@@ -257,3 +257,23 @@ def test_request_text_states_ranges_and_per_person_totals() -> None:
     assert "Ngân sách 3.000.000–6.000.000 đ cả đoàn cả chuyến." in span
     above = request_text(_form(budget=None, budget_min=10_000_000, **TRIP_3D))
     assert "Ngân sách từ 10.000.000 đ cả đoàn cả chuyến." in above
+
+
+def test_unknown_budget_plans_at_the_usual_level_not_the_dearest() -> None:
+    # Ô ngân sách "Không giới hạn" = chưa biết bao nhiêu (không phải chi thoải mái): không hỏi lại
+    # H3, chỗ ở nhắm giá phòng thường gặp (trung vị), kết quả báo tổng ước.
+    from ailusion.itinerary.coordinator.profile import questions_for
+    from ailusion.itinerary.coordinator.search import stay_band_calls
+
+    form = _form(budget=None, budget_unknown=True)
+    profile = profile_trip(form, PQ)
+    assert "H3" not in questions_for(form, profile)
+    assert "H3" in questions_for(_form(budget=None), profile_trip(_form(budget=None), PQ))
+    assert budget_text(form) == "chưa biết — lên theo mức chi thường gặp"
+    (_, args), *_ = stay_band_calls(form, profile.trip_budget, [], profile.price_levels)
+    assert args["min_price_vnd"] < PQ["stay"]["median"] < args["max_price_vnd"]
+    assert budget_level(form, profile) is None  # chưa có tổng ước (bước phân nhóm)
+    level = budget_level(form, profile, 9_000_000)
+    assert level and (level["kind"], level["severity"]) == ("unknown", "info")
+    assert level["text"].startswith("Lịch theo mức chi thường gặp ở Phú Quốc (phòng khoảng 1,4")
+    assert "9.000.000 đ" in level["text"]

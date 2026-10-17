@@ -100,6 +100,8 @@ def budget_text(form: TripForm) -> str | None:
     """Ngân sách user nhập quy về cả đoàn cả chuyến, kèm phép tính theo đơn vị đã chọn (đúng
     `shared/form._to_trip`): "1 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 6 triệu cả đoàn cả
     chuyến". Không có ngân sách thì None."""
+    if form.budget_unknown and not form.budget and form.budget_min is None:
+        return "chưa biết — lên theo mức chi thường gặp"
     band = budget_band(form)
     total = trip_budget(form)
     if band is None or not total:
@@ -144,7 +146,9 @@ def budget_level(
     - "below" ("info"): dưới mức của mức chi đã chọn;
     - "surplus" ("info"): ngân sách trên cả mức Sang mà tổng ước `estimate` của lịch vẫn dưới
       khoảng ngân sách (chỉ biết sau khi lập lịch);
-    - "unlimited" ("info"): mức chi không giới hạn, ghi tổng ước `estimate`.
+    - "unlimited" ("info"): mức chi không giới hạn, ghi tổng ước `estimate`;
+    - "unknown" ("info"): user chưa biết ngân sách (ô ngân sách "Không giới hạn"), lịch theo mức
+      chi thường gặp, ghi tổng ước `estimate`.
     Kèm cả 3 mức để hiện thành bảng. Ngân sách vừa / chưa có mặt bằng giá thì None."""
     rows = level_costs(form, profile)
     if not rows:
@@ -164,6 +168,23 @@ def budget_level(
             f"lưu ở {dest}."
         ),
     }
+    if form.budget_unknown and not budget:
+        if estimate is None:
+            return None
+        return {
+            **base,
+            "kind": "unknown",
+            "severity": "info",
+            "target": "normal",
+            "title": "Chưa có ngân sách",
+            "text": (
+                f"Lịch theo mức chi thường gặp ở {dest} (phòng khoảng "
+                f"{short(levels['stay']['median'])}/đêm), không chọn chỗ đắt nhất: tổng ước "
+                f"{money(estimate)} cho cả đoàn (gồm vé, đi lại, phát sinh). Có ngân sách thì "
+                "nhập để lịch bám theo."
+            ),
+            "log": None,
+        }
     if form.spend_style == "unlimited":
         if estimate is None:
             return None

@@ -149,7 +149,7 @@ Tối đa `MAX_QUESTIONS` = 3 câu, theo thứ tự, mỗi câu kèm nút (`ques
 | H1 Đi cùng ai | `group_type` trống và không suy được từ số người (`group_of`) | gồm "Gia đình", "Gia đình (người lớn)"; "Một mình" đặt luôn số người = 1 |
 | H5 Giờ bận | lịch bận thiếu giờ bắt đầu | tự gõ |
 | H4 Đi bộ được tầm nào | mục đích phiêu lưu mà chưa có mức đi bộ | M1–M4 |
-| H3 Ngân sách | chưa có ngân sách / khoảng | Dưới 3tr · 3–6tr · 6–10tr · Trên 10tr → khoảng `budget_min`–`budget` |
+| H3 Ngân sách | chưa có ngân sách / khoảng, không chọn "Không giới hạn" (chưa biết, `budget_unknown`) | Dưới 3tr · 3–6tr · 6–10tr · Trên 10tr → khoảng `budget_min`–`budget` · Chưa biết → `budget_unknown` |
 | H2 Chuyến này muốn làm gì | ≥ 3 ngày, chưa có mục đích lẫn sở thích | các mục đích |
 | H6 Buổi tối đi tới mấy giờ | chưa có giờ về tối, không đi khuya | gồm "Chưa biết (để 20h)" |
 
