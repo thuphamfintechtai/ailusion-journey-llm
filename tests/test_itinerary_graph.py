@@ -340,6 +340,29 @@ async def test_budget_levels_reach_the_response(llm_calls: list[str]) -> None:
     )
 
 
+async def test_kids_skip_unfit_places_and_the_food_they_are_allergic_to(
+    llm_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Chạy thật Nha Trang (2 bé dưới 6, "bé dị ứng hải sản"): phương án nào cũng có spa, "Bánh
+    # Canh Cua" xếp 2 lần. Giờ: bỏ spa / quán bar và quán có món bé dị ứng, ghi rõ ở đầu kết quả;
+    # chỗ cần lưu ý vì có trẻ có lời dặn trong từng ngày.
+    spa = _p("v7", "Thư Viện Spa", "Spa", 0.0, 0.02, 400000)
+    monkeypatch.setattr(sys.modules[__name__], "VISITS", [*VISITS, spa])
+    resp = await _run(
+        _form(group_size=3, group_type="family", kids_under_6=1, needs_note="bé dị ứng hải sản")
+    )
+    names = {i.name for o in resp.options for d in o.days for i in d.items}
+    assert "Hải sản Bé Mặn" not in names and "Thư Viện Spa" not in names
+    assert (
+        "Bé dị ứng hải sản: bỏ 1 quán có món đó — Hải sản Bé Mặn (hải sản); quán trong lịch vẫn "
+        "nên dặn trước khi gọi món"
+    ) in resp.notes
+    assert any(n.startswith("Đoàn có 1 bé dưới 6 tuổi: bỏ 1 chỗ spa") for n in resp.notes)
+    tips = [x for o in resp.options for d in o.days for x in d.kid_notes]
+    assert "Bãi biển Mỹ Khê: trông trẻ sát khi xuống nước, mang phao tay cho trẻ, che nắng" in tips
+    assert "👶 Bãi biển Mỹ Khê" in itinerary_markdown(resp)
+
+
 async def test_time_window_cases_reach_the_response(llm_calls: list[str]) -> None:
     # Tới nơi 21:00 (về chỗ ở trước 22:00): ngày 1 không xếp gì, ghi rõ vì sao — trước đây lịch
     # trống bị báo "dữ liệu điểm đến thiếu".
