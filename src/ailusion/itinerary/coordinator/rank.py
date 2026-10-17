@@ -13,7 +13,6 @@ Toàn bộ là code, không cộng trọng số tự đặt:
 from __future__ import annotations
 
 import itertools
-import math
 from typing import Any
 
 from ..agents.decision import INTERNAL_PAIR
@@ -25,6 +24,7 @@ from ..shared.form import (
     TripForm,
     budget_band,
     money,
+    rooms_for,
     trip_budget,
 )
 from ..shared.math import dominates, km
@@ -118,12 +118,12 @@ def _fmt(v: float) -> str:
 
 
 def stay_cost(stay: Place | None, form: TripForm) -> int | None:
-    """Tiền chỗ ở cả đoàn: giá 1 đêm × số đêm × số phòng (2 người 1 phòng)."""
+    """Tiền chỗ ở cả đoàn: giá 1 đêm × số đêm × số phòng (`rooms_for`)."""
     if stay is None or form.stay_booked:
         return 0 if form.stay_booked else None
     if form.num_nights == 0:
         return 0
-    rooms = math.ceil(form.group_size / 2)
+    rooms = rooms_for(form)
     return stay.price * form.num_nights * rooms if stay.price else None
 
 
@@ -454,7 +454,7 @@ def money_notes(
     hints = []
     stay = place_from_dict(state["stay"]) if state.get("stay") else None
     if stay and stay.price and not form.stay_booked and form.num_nights:
-        rooms = -(-n // 2)
+        rooms = rooms_for(form)
         up_to = stay.price + spare / form.num_nights / rooms
         center = state.get("center")
         better = sorted(

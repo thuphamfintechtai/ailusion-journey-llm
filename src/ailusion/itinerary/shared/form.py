@@ -16,6 +16,13 @@ Purpose = Literal["relax", "food", "culture", "fun", "adventure", "shopping"]
 
 
 GroupType = Literal["solo", "couple", "friends", "colleagues", "family"]
+GROUP_TYPE_NAMES: dict[str, str] = {
+    "solo": "Một mình",
+    "couple": "Cặp đôi",
+    "friends": "Bạn bè",
+    "colleagues": "Đồng nghiệp",
+    "family": "Gia đình",
+}
 
 
 Priority = Literal["saving", "comfort", "leisure", "short_time", "many_places"]
@@ -425,6 +432,26 @@ class TripForm(BaseModel):
             and to_minutes(wake) >= to_minutes(back)  # type: ignore[arg-type]
         ):
             raise ValueError(f"Giờ thức dậy ({wake}) phải trước giờ về chỗ ở buổi tối ({back})")
+        # "Đi cùng ai" va số người: báo ngay (trước đây "Một mình" mà 3 người vẫn lập lộ trình,
+        # ghi "hợp đi một mình", tính 2 phòng; 3 bé trong đoàn 2 người chỉ tính tiền 2 người).
+        n, kids = self.group_size, self.kids_under_6 + self.kids_6_12
+        if self.group_type == "solo" and n > 1:
+            raise ValueError(f'Đi một mình nhưng số người là {n}: sửa "Số người" hoặc "Đi cùng ai"')
+        if self.group_type not in (None, "solo") and n == 1:
+            raise ValueError(
+                f'{GROUP_TYPE_NAMES[self.group_type]} nhưng số người là 1: sửa "Số người" '
+                'hoặc "Đi cùng ai"'
+            )
+        if kids + self.seniors_65 > n:
+            raise ValueError(
+                f"Số trẻ em và người từ 65 tuổi ({kids + self.seniors_65}) nhiều hơn số người ({n})"
+            )
+        if kids and kids >= n:
+            raise ValueError(f"Có {kids} trẻ em thì số người ({n}) phải gồm cả người lớn đi cùng")
+        if self.wheelchair_users > n:
+            raise ValueError(
+                f"Số người ngồi xe lăn ({self.wheelchair_users}) nhiều hơn số người ({n})"
+            )
         return self
 
     @property
@@ -530,13 +557,32 @@ def daily_budget(form: TripForm) -> int | None:
     return int(total / form.group_size / form.num_days) if total else None
 
 
+def group_of(form: TripForm) -> GroupType | None:
+    """Đi cùng ai: user chọn; chưa chọn thì suy từ số người — 1 người là một mình, có trẻ em /
+    người từ 65 tuổi là gia đình, không hỏi lại "Bạn đi cùng ai?" (trước đây hỏi, bấm "Gia đình có
+    trẻ nhỏ" còn ghi đè số bé user đã nhập thành 1). Không suy được thì None."""
+    if form.group_type:
+        return form.group_type
+    if form.group_size == 1:
+        return "solo"
+    if form.kids_under_6 or form.kids_6_12 or form.seniors_65:
+        return "family"
+    return None
+
+
+def rooms_for(form: TripForm) -> int:
+    """Số phòng: 2 người một phòng, trẻ dưới 6 tuổi ngủ chung giường bố mẹ (khách sạn thường không
+    tính thêm) — trước đây gia đình 2 người lớn + 2 bé dưới 6 tuổi tính 2 phòng."""
+    return max(1, -(-(form.group_size - form.kids_under_6) // 2))
+
+
 def day_allowance(form: TripForm, trip_total: int | None, stay_price: int | None) -> int | None:
     """Tiền nên tiêu mỗi ngày cho cả đoàn — vé + ăn + đi lại (đúng phần `day_spend` đo), chưa
     gồm chỗ ở và phát sinh: (ngân sách ÷ (1 + phát sinh) − tiền phòng) ÷ số ngày. Planner nhận số
     này, bước chạy thử so lịch với số này. Không có ngân sách / "không giới hạn" thì None."""
     if not trip_total or form.spend_style == "unlimited":
         return None
-    rooms = -(-form.group_size // 2)
+    rooms = rooms_for(form)
     stay_total = (stay_price or 0) * form.num_nights * rooms if not form.stay_booked else 0
     rest = trip_total / (1 + EXTRA_MID) - stay_total
     return int(round(max(0.0, rest) / form.num_days / 1000) * 1000) or None

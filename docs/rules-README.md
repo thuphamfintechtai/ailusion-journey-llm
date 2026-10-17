@@ -38,6 +38,10 @@ Mục lục: [0. Pipeline](#0-pipeline) · [1. Form](#1-form-và-đọc-lời-nh
 | Chỗ muốn đi hẹn ngày ngoài chuyến | "{chỗ}: chuyến chỉ có N ngày, không có ngày M" |
 | Đi trong ngày, giờ khởi hành về ≤ giờ đến (đến 15:00, về 09:00) | "Đi trong ngày: giờ khởi hành về (09:00) phải sau giờ đến (15:00)" — trước đây lập ra cả chuyến trống, không nói gì |
 | Giờ dậy ≥ giờ về tối (dậy 21:00, về 20:00); chỉ so khi giờ về từ 12:00 và không đi khuya | "Giờ thức dậy (21:00) phải trước giờ về chỗ ở buổi tối (20:00)" |
+| "Một mình" mà số người > 1; nhóm khác mà 1 người | "Đi một mình nhưng số người là 3: sửa 'Số người' hoặc 'Đi cùng ai'" — FE chọn "Một mình" thì số người thành 1, câu hỏi H1 "Một mình" cũng vậy (form mặc định 2 người) |
+| Số trẻ em + người từ 65 > số người | "Số trẻ em và người từ 65 tuổi (3) nhiều hơn số người (2)" |
+| Có trẻ em mà không có người lớn (số trẻ ≥ số người; người từ 65 tính là người lớn) | "Có 1 trẻ em thì số người (1) phải gồm cả người lớn đi cùng" — FE dựng form từ chat: chưa rõ số người lớn thì tính người đang chat là 1 |
+| Số người ngồi xe lăn > số người | "Số người ngồi xe lăn (3) nhiều hơn số người (2)" |
 
 Lỗi trả 422, `detail` là câu tiếng Việt (`form_error_text`, api/app.py: bỏ tiền tố "Value error, " của pydantic; lỗi kiểu dữ liệu ghi kèm tên ô); FE hiện ở thẻ lỗi kèm nút "Mở lại form".
 
@@ -50,7 +54,7 @@ Lỗi trả 422, `detail` là câu tiếng Việt (`form_error_text`, api/app.py
 | I3 | Ô có danh sách giá trị: chỉ dùng đúng 1 giá trị; không chắc thì bỏ |
 | I4 | Không tự đặt số, không đổi đơn vị (giữ "1,5 triệu", "5 giờ chiều"; code tự đổi) |
 | I5 | Không chọn nhóm khách, không đoán điều user không nói |
-| I6 | Món ghi ở ô "Nhu cầu khác" (VD "bún bò") vào `interests`; "tiết kiệm" không phải ưu tiên |
+| I6 | Món ghi ở ô "Nhu cầu khác" (VD "bún bò") vào `interests` (`foods_in_note`); cụm có "không / ko / kiêng / tránh / dị ứng / hạn chế" ở bất kỳ đâu ("bé dị ứng hải sản") hay bắt đầu bằng "ít" là nhu cầu, không thành món — trước đây chỉ xét đầu cụm, "bé dị ứng hải sản" thành món lịch phải có; "tiết kiệm" không phải ưu tiên |
 
 ## 2. Nhóm khách và nhu cầu
 
@@ -67,6 +71,8 @@ Lỗi trả 422, `detail` là câu tiếng Việt (`form_error_text`, api/app.py
 | A8 | một mình | — | solo_dining |
 
 `needs_care` = có trẻ dưới 6 / người từ 65 / xe lăn. Cột "tối về trước" của bảng A **không còn áp** — giờ về tối chỉ theo user.
+
+Chưa chọn "Đi cùng ai" (`group_of`): 1 người là một mình, có trẻ em / người từ 65 là gia đình — không hỏi lại H1 (trước đây hỏi, bấm "Gia đình có trẻ nhỏ" còn ghi đè 2 bé user nhập thành 1). Số phòng (`rooms_for`): 2 người một phòng, trẻ dưới 6 tuổi ngủ chung giường bố mẹ (khách sạn thường không tính thêm) — trước đây gia đình 2 người lớn + 2 bé dưới 6 tính 2 phòng; vé, bữa ăn của trẻ vẫn tính như người lớn (chưa có giá trẻ em).
 
 **Nhu cầu bắt buộc theo loại chỗ** (`MEAL_NEEDS`, `needs_for`, shared/form.py): nhu cầu ăn uống — có món chay, thuần chay, ghế cao cho bé, thực đơn trẻ em, đồ ăn khuya, bữa sáng, đồ uống có cồn, phòng ăn riêng — chỉ xét ở **quán**; nhu cầu khác (lối / nhà vệ sinh xe lăn, chỗ đỗ ô tô, hợp trẻ em…) xét mọi chỗ. Trước đây bãi biển, bảo tàng, khách sạn cũng bị ghi "chưa rõ có đáp ứng nhu cầu bắt buộc" khi chọn "Có món chay".
 
@@ -100,7 +106,7 @@ Mục đích phiêu lưu + `needs_care` → mức đi bộ tối đa M1.
 | Đi khuya (`night_out`) | ngày kết thúc 23:30 | — |
 | User hẹn chỗ buổi tối muộn hơn giờ về mặc định | kéo ngày tới giờ hẹn + `MUST_EVENING_STAY` 90 phút (tối đa 23:30) | tự đặt |
 | Ngày cuối không nhập giờ đi | `DEFAULT_DEPARTURE` 15:00; kết thúc = giờ đi − thủ tục `CHECKIN_MIN` 90 − dự phòng `DEPARTURE_BUFFER_MIN` 30 − bến 30 | tự đặt |
-| Lịch bận | chặn từ (giờ bận − phút đi tới chỗ bận, mặc định `BUSY_TRAVEL_MIN` 15) tới giờ xong; thiếu giờ → hỏi lại H5; bận hẳn ngoài giờ của ngày (bận 07:00–09:00 mà tới nơi buổi chiều) → bỏ, không chặn gì. Bước chạy thử tự chèn khung bận vào lịch như nghỉ trưa: chỗ nào không kịp xong trước giờ bận thì đi sau giờ bận (+`BUSY_TRAVEL_MIN` từ chỗ bận); bận sau chỗ cuối thì đi bận rồi về; giờ bận tới trong lúc nghỉ trưa thì không nghỉ; lịch ngày hiện mục "Lịch bận" đúng giờ user nhập. Ngày cuối bận xong sau giờ phải rời chỗ ở (bận 11:00–13:00, rời 12:30 để kịp bay 15:00) → ghi "Lịch bận ngày 3 (11:00–13:00) kết thúc sau giờ phải rời chỗ ở (12:30) để kịp chuyến về: lịch ngày này chỉ xếp tới trước giờ bận — kiểm lại giờ bận hoặc giờ về" (`time_notes`, bước phân nhóm). Bận kéo tới / qua giờ kết thúc ngày như ca đó thì không dời chỗ nào ra sau giờ bận (sau đó không còn giờ): chỗ không kịp xong trước giờ bận là lỗi "chạm giờ bận" — bước bù chỗ không thêm, bước cắt bớt bỏ; Planner được ghi "bận tới hết ngày: mọi chỗ phải xong trước 10:45". Trước đây chỗ bị dời ra sau giờ bận, về 16:54 (chỉ 1 lỗi "về trễ" dù dời bao nhiêu chỗ, nên bước bù chỗ còn nhét thêm) | — |
+| Lịch bận | chặn từ (giờ bận − phút đi tới chỗ bận, mặc định `BUSY_TRAVEL_MIN` 15) tới giờ xong; thiếu giờ → hỏi lại H5; bận hẳn ngoài giờ của ngày (bận 07:00–09:00 mà tới nơi buổi chiều) → bỏ, không chặn gì. Bước chạy thử tự chèn khung bận vào lịch như nghỉ trưa: chỗ nào không kịp xong trước giờ bận thì đi sau giờ bận (+`BUSY_TRAVEL_MIN` từ chỗ bận); bận sau chỗ cuối thì đi bận rồi về; giờ bận tới trong lúc nghỉ trưa thì không nghỉ; lịch ngày hiện mục "Lịch bận" đúng giờ user nhập. Ngày cuối bận xong sau giờ phải rời chỗ ở (bận 11:00–13:00, rời 12:30 để kịp bay 15:00) → ghi "Lịch bận ngày 3 (11:00–13:00) kết thúc sau giờ phải rời chỗ ở (12:30) để kịp chuyến về: lịch ngày này chỉ xếp tới trước giờ bận — kiểm lại giờ bận hoặc giờ về" (`time_notes`, bước phân nhóm). Bận kéo tới / qua giờ kết thúc ngày như ca đó thì không dời chỗ nào ra sau giờ bận (sau đó không còn giờ): chỗ không kịp xong trước giờ bận là lỗi "chạm giờ bận" — bước bù chỗ không thêm, bước cắt bớt bỏ; Planner được ghi "bận tới hết ngày: mọi chỗ phải xong trước 10:45". Trước đây chỗ bị dời ra sau giờ bận, về 16:54 (chỉ 1 lỗi "về trễ" dù dời bao nhiêu chỗ, nên bước bù chỗ còn nhét thêm). Ngày cuối bận xong sau giờ rời chỗ ở thì lịch kết thúc bằng mục `depart` (icon máy bay) "13:00 Từ chỗ bận ra thẳng sân bay / ga / bến xe, kịp chuyến về 15:00 (trả phòng trước giờ bận)" — trước đây "Về <chỗ ở> 13:15, kết thúc chuyến"; đường trên bản đồ dừng ở chỗ cuối, không vẽ về chỗ ở (`depart_after`, dùng chung cho dòng lịch và `fill_paths`) | — |
 | Nghỉ trưa | ngày bắt đầu ≤ `NAP_IF_START_BY` 09:00 **và** kết thúc ≥ `NAP_IF_END_FROM` 17:00, `nap` ≠ none → nghỉ `NAP_MIN` 90 phút; giờ rảnh trừ 90 phút | user |
 | Chỗ nghỉ trưa (`auto`) | quán trưa → chỗ ở ≤ `NAP_HOME_MAX` 20 phút thì về chỗ ở, xa hơn thì quán cà phê gần quán trưa (≤ `NAP_SPOT_KM` 4 km). User chọn khách sạn / quán cà phê mà không có chỗ nào trong 4 km quanh quán trưa → nghỉ ở chỗ ở, ghi "không có khách sạn trong 4 km quanh quán trưa: nghỉ trưa ở chỗ ở" (trước đây đổi chỗ không báo) | tự đặt |
 | Giá nghỉ trưa | quán cà phê `CAFE_REST_PRICE` 50k/người · khách sạn `HOTEL_REST_SHARE` 0,5 × giá phòng 1 đêm | tự đặt |
@@ -130,7 +136,7 @@ Tối đa `MAX_QUESTIONS` = 3 câu, theo thứ tự, mỗi câu kèm nút (`ques
 
 | Câu | Khi nào | Lựa chọn |
 |---|---|---|
-| H1 Đi cùng ai | `group_type` trống | gồm "Gia đình", "Gia đình (người lớn)" |
+| H1 Đi cùng ai | `group_type` trống và không suy được từ số người (`group_of`) | gồm "Gia đình", "Gia đình (người lớn)"; "Một mình" đặt luôn số người = 1 |
 | H5 Giờ bận | lịch bận thiếu giờ bắt đầu | tự gõ |
 | H4 Đi bộ được tầm nào | mục đích phiêu lưu mà chưa có mức đi bộ | M1–M4 |
 | H3 Ngân sách | chưa có ngân sách / khoảng | Dưới 3tr · 3–6tr · 6–10tr · Trên 10tr → khoảng `budget_min`–`budget` |

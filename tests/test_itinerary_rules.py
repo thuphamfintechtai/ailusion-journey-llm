@@ -143,7 +143,10 @@ def test_group_rules_in_order() -> None:
 
 
 def test_questions_at_most_three_in_order() -> None:
-    form = family_form(group_type=None, budget=None, purposes=[], interests="")
+    # Không có trẻ em / người từ 65 (có thì đã biết là gia đình, không hỏi H1).
+    form = family_form(
+        group_type=None, kids_under_6=0, seniors_65=0, budget=None, purposes=[], interests=""
+    )
     profile = profile_trip(form)
     assert questions_for(form, profile) == ["H1", "H3", "H2"]
 

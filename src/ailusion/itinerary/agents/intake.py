@@ -306,12 +306,13 @@ ALL_FILLABLE = (
 
 def foods_in_note(note: str) -> list[str]:
     """Cụm trong ô "nhu cầu khác" là món ăn (VD "bún bò", "hải sản") -> sở thích, không cần LLM.
-    Bỏ cụm phủ định ("không ăn cay") — đó là nhu cầu, không phải món muốn ăn."""
+    Bỏ cụm phủ định ("không ăn cay", "bé dị ứng hải sản") — đó là nhu cầu, không phải món muốn
+    ăn."""
     out = []
     for part in re.split(r"[,;\n.]+|\s+(?:và|với|hoặc)\s+", note):
         part = part.strip()
         plain = _plain(part)
-        if not part or plain.startswith(NOT_FOOD):
+        if not part or NOT_FOOD.search(plain):
             continue
         # "muốn ăn hải sản" -> "hải sản"
         part = re.sub(
@@ -322,8 +323,10 @@ def foods_in_note(note: str) -> list[str]:
     return out
 
 
-# Cụm phủ định / dị ứng trong ô "nhu cầu khác": là nhu cầu, không phải món muốn ăn.
-NOT_FOOD = ("khong", "ko ", "k an", "tranh", "kieng", "di ung", "it ", "han che")
+# Cụm phủ định / dị ứng trong ô "nhu cầu khác": là nhu cầu, không phải món muốn ăn. Xét cả chữ
+# giữa cụm — trước đây chỉ xét đầu cụm, "bé dị ứng hải sản" thành món lịch PHẢI có; "ít" chỉ xét
+# đầu cụm ("ít cay"), không thì bỏ nhầm món "bánh ít".
+NOT_FOOD = re.compile(r"\b(?:khong|ko|k an|tranh|kieng|di ung|han che)\b|^it\b")
 
 
 def add_interests(form: TripForm, items: list[str]) -> TripForm:

@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from langchain_core.tools import BaseTool
 
-from ailusion.itinerary import TripForm, build_itinerary_graph, to_response
+from ailusion.itinerary import TripForm, build_itinerary_graph, itinerary_markdown, to_response
 from ailusion.itinerary.agents.budget import PriceFinds
 from ailusion.itinerary.agents.decision import DecisionOutput
 from ailusion.itinerary.agents.experience import PurposeChecks
@@ -371,6 +371,28 @@ async def test_time_window_cases_reach_the_response(llm_calls: list[str]) -> Non
         day3 = option.days[2]
         assert all(i.start < "11:00" for i in day3.items if i.type in ("visit", "meal"))
         assert not any("quá giờ kết thúc" in x for x in day3.issues)
+        # Bận xong 13:00 mà 12:30 đã phải rời chỗ ở: dòng cuối đi thẳng ra bến, không còn "Về
+        # <chỗ ở> 13:15, kết thúc chuyến".
+        depart = day3.items[-1]
+        assert (depart.type, depart.start) == ("depart", "13:00")
+        assert depart.name == (
+            "Từ chỗ bận ra thẳng sân bay / ga / bến xe, kịp chuyến về 15:00 "
+            "(trả phòng trước giờ bận)"
+        )
+    assert "- 13:00 ✈️ Từ chỗ bận ra thẳng sân bay" in itinerary_markdown(last)
+    # Ngày cuối bận xong 12:00, trước giờ rời chỗ ở 12:30: bận rồi về chỗ ở như cũ.
+    early = await _run(
+        _form(
+            departure_time="15:00",
+            busy_slots=[{"day": 3, "busy_start": "11:00", "busy_end": "12:00"}],
+        )
+    )
+    *_, busy, back = early.options[0].days[2].items
+    assert (busy.type, busy.end) == ("busy", "12:00")
+    assert early.stay and (back.start, back.name) == (
+        "12:15",
+        f"Về {early.stay.name}, kết thúc chuyến",
+    )
 
 
 async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None:
@@ -619,7 +641,8 @@ async def test_missing_info_asks_once(llm_calls: list[str]) -> None:
     resp = await _run(_form(group_type=None, budget=None))
     assert resp.status == "need_info"
     assert [q.id for q in resp.questions] == ["H1", "H3"]
-    assert resp.questions[0].choices[0].set == {"group_type": "solo"}
+    # "Một mình" sửa luôn số người (form 2 người mà chỉ đổi loại nhóm thì bị từ chối).
+    assert resp.questions[0].choices[0].set == {"group_type": "solo", "group_size": 1}
     assert not any(n == "search_hotels" for n, _ in CALLS)  # chưa tìm kiếm gì
 
 
