@@ -3,7 +3,8 @@
 Liệt kê mọi luật của pipeline lập lộ trình (LLM service) theo thứ tự các bước, kèm giá trị, chỗ
 khai báo và nguồn: **dữ liệu** (lấy từ DB / tool), **user** (user yêu cầu), **tự đặt** (số tạm).
 Đường dẫn tính từ `ailusion-journey-llm/src/ailusion/itinerary/`. Chi tiết riêng:
-[budget-README.md](budget-README.md) (ngân sách), [planner-README.md](planner-README.md) (Planner).
+[budget-README.md](budget-README.md) (ngân sách), [planner-README.md](planner-README.md) (Planner),
+[backlog-README.md](backlog-README.md) (việc còn mở).
 
 Mục lục: [0. Pipeline](#0-pipeline) · [1. Form](#1-form-và-đọc-lời-nhắn) · [2. Nhóm khách](#2-nhóm-khách-và-nhu-cầu) ·
 [3. Giờ rảnh](#3-giờ-rảnh-từng-ngày) · [4. Bữa ăn](#4-bữa-ăn) · [5. Hỏi lại](#5-hỏi-lại) ·
