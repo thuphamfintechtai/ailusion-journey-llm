@@ -193,6 +193,23 @@ def profile_trip(
     return profile
 
 
+def time_notes(form: TripForm, profile: TripProfile) -> list[str]:
+    """Ghi chú khi giờ user nhập va nhau mà vẫn lập được: lịch bận ngày cuối kéo quá giờ phải
+    rời chỗ ở để kịp chuyến về (bận 11:00–13:00 mà phải rời chỗ ở 12:30)."""
+    last = profile.days[-1]
+    out = []
+    for slot in form.busy_slots:
+        if slot.day != last.day or slot.one_person or not slot.busy_start or not slot.busy_end:
+            continue
+        if to_minutes(slot.busy_end) > to_minutes(last.day_end):
+            out.append(
+                f"Lịch bận ngày {last.day} ({slot.busy_start}–{slot.busy_end}) kết thúc sau giờ "
+                f"phải rời chỗ ở ({last.day_end}) để kịp chuyến về: lịch ngày này chỉ xếp tới "
+                "trước giờ bận — kiểm lại giờ bận hoặc giờ về."
+            )
+    return out
+
+
 QUESTIONS: dict[str, dict[str, Any]] = {
     "H1": {
         "text": "Bạn đi cùng ai?",
@@ -334,7 +351,15 @@ async def phan_nhom(state: ItineraryState, ctx: Ctx) -> dict:
     level = budget_level(form, profile)
     if level and level.get("log"):
         await ctx.log("phan_nhom", "finding", level["log"])
-    return {"profile": profile.model_dump(mode="json"), "center": center, "tool_log": logs}
+    notes = time_notes(form, profile)
+    for note in notes:
+        await ctx.log("phan_nhom", "finding", note)
+    return {
+        "profile": profile.model_dump(mode="json"),
+        "center": center,
+        "tool_log": logs,
+        "notes": [*(state.get("notes") or []), *notes],
+    }
 
 
 def after_profile(state: ItineraryState) -> str:

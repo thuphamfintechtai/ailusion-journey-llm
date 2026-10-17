@@ -42,7 +42,6 @@ from ..shared.form import (
     LONG_WAIT_MAX,
     LUNCH,
     LUNCH_TARGET,
-    MEAL_MIN_OVERLAP,
     MEAL_STAY,
     MEALS,
     MIN_MEAL_GAP,
@@ -56,7 +55,7 @@ from ..shared.form import (
     hhmm,
     must_time_text,
     must_window,
-    required_meals,
+    needed_meals,
     to_minutes,
 )
 from ..shared.math import km, median
@@ -397,7 +396,7 @@ def fill_visits(
         run = simulate(trial, places, matrix, window, required_needs, long_stay=False)
         return trial, len(run.issues)
 
-    dinner = "tối" in required_meals(window.day_start, window.day_end)
+    dinner = "tối" in needed_meals(window)
 
     def ends_early() -> bool:
         run = simulate(plan, places, matrix, window, required_needs, long_stay=False)
@@ -578,7 +577,7 @@ def place_meals(
     bases = [c for c in meal_sets if not one_brand_twice(c)] or meal_sets
     # Bù quán dự phòng cho đủ số bữa bắt buộc của ngày, vào MỌI bộ quán gốc (kể cả bộ đã bỏ quán
     # trùng chuỗi), rồi lọc lại để không bộ nào ăn 2 bữa cùng chuỗi.
-    target = max(2, len(required_meals(window.day_start, window.day_end)))
+    target = max(2, len(needed_meals(window)))
     meal_sets = list(bases)
     for base in bases:
         for k in range(1, target - len(base) + 1):
@@ -898,6 +897,11 @@ def _simulate(
             if not any(leave <= a < leave + go + NAP_MIN for a, _b in pending):
                 rest = (k, leave + go, leave + go + NAP_MIN, spot)
                 t, prev = rest[2], spot
+                if spot == STAY and window.nap_at in ("cafe", "hotel"):
+                    kind = "khách sạn" if window.nap_at == "hotel" else "quán cà phê"
+                    unchecked.append(
+                        f"không có {kind} trong {NAP_SPOT_KM} km quanh quán trưa: nghỉ trưa ở chỗ ở"
+                    )
     back_travel = matrix.get((prev, STAY))
     if back_travel is None and plan.stops:
         unchecked.append("chưa có phút đi về chỗ ở")
@@ -924,18 +928,6 @@ def _simulate(
         rest,
         busy,
     )
-
-
-def needed_meals(window: DayWindow) -> set[str]:
-    """Bữa bắt buộc của ngày (`required_meals`), trừ bữa đang bận / dự tiệc phủ giờ ăn (VD tiệc
-    cưới từ 16:45: ăn ở đó, không bắt xếp thêm quán)."""
-    need = set(required_meals(window.day_start, window.day_end))
-    busy = _slots(window.blocked_slots + window.meal_only_slots)
-    for name, (m0, m1) in MEALS.items():
-        a0, a1 = to_minutes(m0), to_minutes(m1)
-        if any(min(b1, a1) - max(b0, a0) >= MEAL_MIN_OVERLAP for b0, b1 in busy):
-            need.discard(name)
-    return need
 
 
 def meal_time_issues(
