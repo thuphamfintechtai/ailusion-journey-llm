@@ -60,7 +60,7 @@ Nhãn trên từng chỗ: `hợp mục đích` · `đi buổi tối` (mở từ 
 |---|---|
 | 1 | Chỉ dùng mã trong danh sách, không bịa chỗ |
 | 2 | `leave_stay` không sớm hơn giờ bắt đầu ngày |
-| 3 | Cả lịch (kể cả ở lại, đi về) nằm trong giờ rảnh; không chạm khung bị chặn; khung "chỉ ăn uống" chỉ xếp quán |
+| 3 | Cả lịch (kể cả ở lại, đi về) nằm trong giờ rảnh; khung bị chặn (giờ bận) hệ thống tự chèn — cứ xếp chỗ trước rồi chỗ sau giờ bận, trừ ngày "bận tới hết ngày": mọi chỗ phải xong trước giờ bận; khung "chỉ ăn uống" chỉ xếp quán |
 | 4 | Không xếp chỗ đóng cửa; tới trong giờ mở cửa |
 | 5 | Mỗi ngày ≥ 2 lịch, không trùng hệt; mã lịch (L1, L2…) không trùng trong ngày; mỗi lịch không 2 chỗ chơi cùng loại (cột thứ 3; loại "–" là chưa rõ loại, không tính); ưu tiên chỗ "hợp mục đích" |
 | 6 | Bữa ăn: mỗi bữa bắt buộc của ngày (tính sẵn theo giờ bắt đầu ngày) 1 quán, đặt gần đúng chỗ — **code tự dời quán vào đúng giờ ăn**, bỏ quán thừa / sai giờ; không 2 quán liền nhau; mọi chỗ bán đồ ăn tính 1 bữa; quán "bữa sáng" chỉ làm bữa sáng |

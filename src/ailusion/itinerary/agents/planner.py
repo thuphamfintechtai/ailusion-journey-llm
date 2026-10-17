@@ -29,6 +29,7 @@ from ..shared.form import (
     needed_meals,
     required_meals,
     skipped_meals,
+    to_minutes,
 )
 from ..shared.llm import OUTPUT_TOKENS
 from ..shared.models import (
@@ -51,7 +52,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 
 1. Chỉ dùng mã chỗ trong danh sách (D… chỗ đi chơi, Q… quán ăn). Không bịa chỗ.
 2. Giờ rời chỗ ở (`leave_stay`) không sớm hơn giờ bắt đầu ngày.
-3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày. Khung "bị chặn" là giờ bận của user: hệ thống tự chèn vào lịch như nghỉ trưa (chỗ nào không kịp xong trước giờ bận thì đi sau giờ bận), không ghi vào `stops` — cứ xếp chỗ trước giờ bận rồi chỗ sau giờ bận theo đúng thứ tự, KHÔNG bỏ cả buổi còn lại; "rảnh … phút" đã trừ giờ bận. Khung "chỉ ăn uống" chỉ được xếp quán Q….
+3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày. Khung "bị chặn" là giờ bận của user: hệ thống tự chèn vào lịch như nghỉ trưa (chỗ nào không kịp xong trước giờ bận thì đi sau giờ bận), không ghi vào `stops` — cứ xếp chỗ trước giờ bận rồi chỗ sau giờ bận theo đúng thứ tự, KHÔNG bỏ cả buổi còn lại; "rảnh … phút" đã trừ giờ bận. Ngày ghi "bận tới hết ngày" thì sau giờ bận không còn giờ: mọi chỗ phải xong trước giờ bận, KHÔNG xếp chỗ nào sau đó. Khung "chỉ ăn uống" chỉ được xếp quán Q….
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
 5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau; `id` mỗi lịch (L1, L2, …) không trùng nhau trong ngày. Mỗi lịch không có 2 chỗ chơi D… cùng `loại` (cột thứ 3 của danh sách: 2 chùa, 2 bảo tàng, 2 spa… là lỗi; loại "–" là chưa rõ loại, không tính). Ưu tiên chỗ ghi "hợp mục đích".
 6. Bữa ăn: dòng "Ngày …" ghi bữa BẮT BUỘC của ngày (và bữa tuỳ chọn / không xếp), tính sẵn theo giờ bắt đầu ngày. Mỗi bữa bắt buộc 1 quán Q… trong `stops`, đặt gần đúng chỗ (bữa sáng đầu ngày nếu có, trưa giữa ngày, tối cuối ngày) — hệ thống tự dời quán vào đúng giờ ăn và bỏ quán thừa / sai giờ. Giữa 2 bữa là chỗ chơi, không xếp 2 quán liền nhau; mọi chỗ bán đồ ăn (kể cả "khu ăn uống", "ăn vặt") tính là 1 bữa; quán loại "bữa sáng" chỉ làm bữa sáng; thiếu bữa bắt buộc là lỗi. `leave_stay` = giờ bắt đầu ngày.
@@ -294,6 +295,11 @@ def planner_input(
         extra = []
         if d.blocked_slots:
             extra.append("bị chặn " + ", ".join(d.blocked_slots))
+            # Bận tới / qua giờ kết thúc ngày (ngày cuối bận 11:00–13:00, rời chỗ ở 12:30): sau
+            # giờ bận không còn giờ (luật 3).
+            ends = [s.split("–") for s in d.blocked_slots]
+            if until := next((a for a, b in ends if to_minutes(b) >= to_minutes(d.day_end)), None):
+                extra.append(f"bận tới hết ngày: mọi chỗ phải xong trước {until}")
         if d.meal_only_slots:
             extra.append("chỉ ăn uống " + ", ".join(d.meal_only_slots))
         weather = weather_text(state, d.day)

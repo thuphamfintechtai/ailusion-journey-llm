@@ -358,6 +358,19 @@ async def test_time_window_cases_reach_the_response(llm_calls: list[str]) -> Non
     items = [(i.type, i.start, i.end, i.name) for i in day2.items if i.type == "busy"]
     assert items == [("busy", "14:00", "16:00", "Lịch bận: Hội nghị")]
     assert not any("chạm giờ bận" in x for x in day2.issues)
+    # Ngày cuối bận 11:00–13:00 mà 12:30 phải rời chỗ ở (bay 15:00): không chỗ nào sau giờ bận
+    # (chạy thật từng ra lịch về 16:54), đầu kết quả ghi chú giờ bận va giờ về.
+    last = await _run(
+        _form(
+            departure_time="15:00",
+            busy_slots=[{"day": 3, "busy_start": "11:00", "busy_end": "13:00"}],
+        )
+    )
+    assert any("kết thúc sau giờ phải rời chỗ ở (12:30)" in n for n in last.notes)
+    for option in last.options:
+        day3 = option.days[2]
+        assert all(i.start < "11:00" for i in day3.items if i.type in ("visit", "meal"))
+        assert not any("quá giờ kết thúc" in x for x in day3.issues)
 
 
 async def test_full_pipeline_returns_three_options(llm_calls: list[str]) -> None:
