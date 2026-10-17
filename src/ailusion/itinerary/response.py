@@ -33,10 +33,12 @@ from .coordinator.simulate import BUSY, simulate
 from .shared.context import Ctx
 from .shared.fares import cars_for, city_of, compare, is_night
 from .shared.form import (
+    DEFAULT_DEPARTURE,
     GROUP_NAMES,
     PURPOSE_NAMES,
     BusySlot,
     TripForm,
+    clock,
     hhmm,
     money,
     must_time_text,
@@ -98,7 +100,8 @@ class TravelAlt(BaseModel):
 
 
 class Item(BaseModel):
-    type: Literal["start", "visit", "meal", "rest", "busy", "back"]
+    # depart: ngày cuối bận xong sau giờ phải rời chỗ ở, đi thẳng từ chỗ bận ra bến (thay "back").
+    type: Literal["start", "visit", "meal", "rest", "busy", "back", "depart"]
     start: str
     end: str
     name: str
@@ -588,6 +591,24 @@ def user_busy(form: TripForm, day: int, a: int, b: int) -> BusySlot | None:
     return min(slots, key=lambda s: abs(to_minutes(s.busy_start or "00:00") - a), default=None)
 
 
+def depart_after(plan: DayPlan, run: Run, form: TripForm, state: dict[str, Any]) -> int | None:
+    """Ngày cuối bận xong sau giờ phải rời chỗ ở (bận 11:00–13:00, rời 12:30 để kịp bay 15:00):
+    giờ xong việc bận — từ chỗ bận ra thẳng bến, không về chỗ ở (lịch kết thúc bằng mục
+    "depart", đường trên bản đồ không vẽ về chỗ ở). Không phải thì None."""
+    done = max((b for k, _a, b in run.busy if k == len(run.stops)), default=None)
+    if done is None or plan.day <= form.num_nights:
+        return None
+    window = next((d for d in profile_of(state).days if d.day == plan.day), None)
+    return done if window is not None and done > to_minutes(window.day_end) else None
+
+
+def leave_for(form: TripForm) -> str:
+    """Mốc phải kịp ở bến ngày cuối: giờ đóng quầy check-in user nhập, không thì giờ khởi hành."""
+    if form.checkin_close_time:
+        return f"giờ đóng quầy check-in {form.checkin_close_time}"
+    return f"chuyến về {clock(form.departure_time) or DEFAULT_DEPARTURE}"
+
+
 def idle_note(plan: DayPlan, run: Run, form: TripForm, state: dict[str, Any]) -> str | None:
     """Câu cho ngày không xếp gì (lịch trống, không bận): vì sao trống. Ngày có việc thì None."""
     if run.stops or run.busy:
@@ -908,20 +929,35 @@ def _day(
         items += busy_items(len(run.stops))
         last_travel = run.back - max(b for _a, b in busy_at[len(run.stops)])
         prev = BUSY
-    items.append(
-        Item(
-            type="back",
-            start=hhmm(run.back),
-            end=hhmm(run.back),
-            name=(
-                f"Về nghỉ đêm tại {stay_name}"
-                if plan.day <= form.num_nights
-                else f"Về {stay_name}, kết thúc chuyến"
-            ),
-            travel_min=int(last_travel),
-            **(leg(prev, STAY, run.back) if run.stops else {"travel_mode": mode}),
+    if (depart := depart_after(plan, run, form, state)) is not None:
+        # Trước đây ghi "Về <chỗ ở> 13:15, kết thúc chuyến" dù 12:30 đã phải rời chỗ ở.
+        items.append(
+            Item(
+                type="depart",
+                start=hhmm(depart),
+                end=hhmm(depart),
+                name=(
+                    f"Từ chỗ bận ra thẳng sân bay / ga / bến xe, kịp {leave_for(form)} "
+                    "(trả phòng trước giờ bận)"
+                ),
+                travel_mode=mode,
+            )
         )
-    )
+    else:
+        items.append(
+            Item(
+                type="back",
+                start=hhmm(run.back),
+                end=hhmm(run.back),
+                name=(
+                    f"Về nghỉ đêm tại {stay_name}"
+                    if plan.day <= form.num_nights
+                    else f"Về {stay_name}, kết thúc chuyến"
+                ),
+                travel_min=int(last_travel),
+                **(leg(prev, STAY, run.back) if run.stops else {"travel_mode": mode}),
+            )
+        )
     # Ngày không xếp gì (tới nơi tối, rời chỗ ở sớm để về): không hiện "xuất phát / về" cùng giờ,
     # ghi rõ vì sao ngày trống.
     idle = idle_note(plan, run, form, state)
@@ -1149,10 +1185,30 @@ def route_chunks(points: list[str]) -> list[list[str]]:
     return out
 
 
+def ends_at_hub(state: dict[str, Any], pids: list[str]) -> set[str]:
+    """Lịch ngày cuối đi thẳng từ chỗ bận ra bến (`depart_after`, cùng cách chạy thử như
+    `to_response`): đường trên bản đồ dừng ở chỗ cuối."""
+    form, profile = form_of(state), profile_of(state)
+    windows = {d.day: d for d in profile.days}
+    places, matrix, plans = places_of(state), matrix_of(state), plans_of(state)
+    out = set()
+    for pid in pids:
+        plan = plans.get(pid)
+        if plan is None or plan.day <= form.num_nights or plan.day not in windows:
+            continue
+        run = simulate(
+            plan, places, matrix, windows[plan.day], profile.required_needs, long_stay=False
+        )
+        if depart_after(plan, run, form, state) is not None:
+            out.add(pid)
+    return out
+
+
 async def fill_paths(state: dict[str, Any], ctx: Ctx) -> dict[str, Any]:
     """Đường xe chạy thật (Vietmap) cho mỗi lịch nằm trong phương án: chỗ ở → các chỗ theo thứ
-    tự → chỗ ở. Lịch dùng chung giữa các phương án chỉ gọi 1 lần. Không có toạ độ chỗ ở hoặc
-    tool hỏng thì bỏ qua: bản đồ nối thẳng các điểm như trước."""
+    tự → chỗ ở (ngày cuối đi thẳng từ chỗ bận ra bến thì dừng ở chỗ cuối). Lịch dùng chung giữa
+    các phương án chỉ gọi 1 lần. Không có toạ độ chỗ ở hoặc tool hỏng thì bỏ qua: bản đồ nối
+    thẳng các điểm như trước."""
     stay = state.get("stay") or {}
     if stay.get("lat") is None or stay.get("lng") is None:
         return {}
@@ -1163,6 +1219,7 @@ async def fill_paths(state: dict[str, Any], ctx: Ctx) -> dict[str, Any]:
             pid for o in (state.get("trip") or {}).get("options") or [] for pid in o["days"]
         )
     )
+    away = ends_at_hub(state, wanted) if state.get("profile") else set()
     calls, owners = [], []
     for pid in wanted:
         plan = plans.get(pid) or {}
@@ -1175,7 +1232,9 @@ async def fill_paths(state: dict[str, Any], ctx: Ctx) -> dict[str, Any]:
             if plan.get("rest_after") == k:  # ghé chỗ nghỉ trưa (chỗ ở / quán gần đó) rồi đi tiếp
                 spot = places.get(plan.get("rest_at") or "")
                 points.append(f"{spot.lat},{spot.lng}" if spot else home)
-        points.append(home)
+        # Ngày cuối đi thẳng từ chỗ bận ra bến: không vẽ chỗ cuối → chỗ ở (trước đây vẫn vẽ).
+        if pid not in away:
+            points.append(home)
         for chunk in route_chunks(points):
             calls.append(
                 (
@@ -1320,6 +1379,8 @@ def itinerary_markdown(resp: ItineraryResponse) -> str:
                 lines.append(f"- {item.start} {ICONS[item.type]} {item.name}{price}")
             elif item.type == "busy":
                 lines.append(f"- {item.start}–{item.end} ⏳ {item.name}")
+            elif item.type == "depart":
+                lines.append(f"- {item.start} ✈️ {item.name}")
         if not day.items and day.area_note:
             lines.append(f"- {day.area_note}")
         if day.issues:
