@@ -15,7 +15,7 @@ import unicodedata
 from ..agents.budget import MAX_PRICE_FINDS, find_prices
 from ..agents.experience import MAX_PURPOSE_CHECKS, check_purposes
 from ..shared.context import Ctx
-from ..shared.form import PURPOSE_KEYWORDS
+from ..shared.form import PURPOSE_KEYWORDS, need_text, needs_for, unknown_needs
 from ..shared.math import km
 from ..shared.models import (
     ItineraryState,
@@ -184,7 +184,7 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
         unknown = [
             p.place_id
             for p in candidates
-            if any(p.need_status.get(n, "unknown") == "unknown" for n in profile.required_needs)
+            if unknown_needs(p.kind, p.need_status, profile.required_needs)
         ]
         for i in range(0, len(unknown), 15):
             calls.append(
@@ -211,8 +211,10 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
         reason = None
         if p.hours and all(p.hours.get(d, "?") is None for d in range(1, form.num_days + 1)):
             reason = "đóng cửa mọi ngày của chuyến"
-        elif any(p.need_status.get(n) == "no" for n in profile.required_needs):
-            reason = "thiếu nhu cầu bắt buộc"
+        elif lacking := [
+            n for n in needs_for(p.kind, profile.required_needs) if p.need_status.get(n) == "no"
+        ]:
+            reason = f"thiếu nhu cầu bắt buộc: {need_text(lacking)}"
         elif state.get("alerts") and p.kind == "visit" and not indoor(p):
             reason = "cảnh báo thiên tai mức đỏ, chỗ ngoài trời"
         elif is_shop(p) and "shopping" not in profile.purposes:
@@ -233,8 +235,8 @@ async def loc(state: ItineraryState, ctx: Ctx) -> dict:
             removed.append(f"{p.name}: {reason}")
             del places[pid]
             continue
-        if any(p.need_status.get(n, "unknown") == "unknown" for n in profile.required_needs):
-            p.to_verify.append("chưa rõ có đáp ứng nhu cầu bắt buộc, nên hỏi trước")
+        if unsure := unknown_needs(p.kind, p.need_status, profile.required_needs):
+            p.to_verify.append(f"chưa rõ đáp ứng: {need_text(unsure)} — nên hỏi trước")
     removed += [f"{r}: cùng một chỗ" for r in merge_duplicates(places)]
     if removed:
         notes.append(f"Bỏ {len(removed)} chỗ: " + "; ".join(removed[:6]))

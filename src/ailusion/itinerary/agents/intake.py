@@ -12,7 +12,7 @@ import re
 from pydantic import BaseModel, Field
 
 from ..shared.context import Ctx
-from ..shared.form import TripForm
+from ..shared.form import NEED_NAMES, TripForm
 from ..shared.llm import OUTPUT_TOKENS, norm, quote_found
 from ..shared.models import ItineraryState, _plain, form_of
 from ..shared.tools import kind_of
@@ -108,35 +108,8 @@ class ExtractedMust(BaseModel):
     quote: str
 
 
-# Mã nhu cầu đúng mã của MCP (`_nhu_cau.NHU_CAU`) -> nghĩa, để LLM đổi chữ user gõ ra mã lọc được.
-NEED_CODES: dict[str, str] = {
-    "wheelchair": "lối vào cho xe lăn",
-    "wheelchair_toilet": "nhà vệ sinh cho xe lăn",
-    "wheelchair_parking": "chỗ đỗ xe cho xe lăn",
-    "hearing_assist": "hỗ trợ người khiếm thính",
-    "kids": "phù hợp trẻ em",
-    "high_chair": "ghế cao cho bé",
-    "kids_menu": "thực đơn trẻ em",
-    "playground": "sân chơi",
-    "baby_changing": "bàn thay tã / phòng cho con bú",
-    "vegetarian": "có món chay",
-    "vegan": "có món thuần chay",
-    "late_night_food": "đồ ăn khuya",
-    "breakfast": "phục vụ bữa sáng",
-    "alcohol": "có đồ uống có cồn",
-    "private_room": "phòng ăn riêng",
-    "car_parking": "có chỗ đỗ ô tô",
-    "free_parking": "đỗ xe miễn phí",
-    "card_payment": "thanh toán thẻ",
-    "pets": "cho mang chó theo",
-    "wifi": "Wi-Fi",
-    "restroom": "có nhà vệ sinh",
-    "luggage_storage": "giữ hộ hành lý",
-    "outdoor_seating": "chỗ ngồi ngoài trời",
-    "reservations": "nhận đặt chỗ",
-    "groups": "hợp đi nhóm đông",
-    "quiet": "yên tĩnh",
-}
+# Mã nhu cầu đúng mã của MCP -> nghĩa, để LLM đổi chữ user gõ ra mã lọc được.
+NEED_CODES = NEED_NAMES
 
 
 INTAKE = INTAKE_TEMPLATE.replace(

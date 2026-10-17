@@ -20,7 +20,13 @@ from datetime import timedelta
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import CAFE_REST_PRICE, HOTEL_REST_SHARE, PURPOSE_KEYWORDS, TripForm
+from ..shared.form import (
+    CAFE_REST_PRICE,
+    HOTEL_REST_SHARE,
+    PURPOSE_KEYWORDS,
+    TripForm,
+    needs_for,
+)
 from ..shared.math import km, median
 from ..shared.models import (
     ItineraryState,
@@ -56,8 +62,13 @@ def place_calls(
     # Thứ user nhắc (VD "bún bò"): tìm riêng từng thứ.
     for word in wanted_words(interests)[:5]:
         calls.append(("find_places", {**where, "query": word, "limit": 30}))
+    # Nhu cầu: một lượt tìm quán đáp ứng mọi nhu cầu (kể cả món chay, ghế cao cho bé), một lượt
+    # tìm chỗ chơi theo nhu cầu không phải ăn uống (lối xe lăn...).
     if needs:
         calls.append(("find_places", {**where, "needs": needs, "limit": 30}))
+    other = needs_for("visit", needs)
+    if other and other != needs:
+        calls.append(("find_places", {**where, "needs": other, "limit": 30}))
     return calls
 
 
@@ -276,6 +287,7 @@ def stay_band_calls(
 ) -> list[tuple[str, dict[str, Any]]]:
     if not trip_budget or not form.num_nights or form.stay_booked:
         return []
+    needs = needs_for("stay", needs)
     rooms = -(-form.group_size // 2)
     target = trip_budget * stay_target_share(form) / form.num_nights / rooms
     return [
@@ -319,6 +331,7 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
     form, profile = form_of(state), profile_of(state)
     dest = form.destination
     start, end = form.start_date.isoformat(), form.end_date.isoformat()
+    stay_needs = needs_for("stay", profile.required_needs)
     calls = []
     for where in [{"destination": dest}, *wider_wheres(dest, state.get("center"))]:
         calls += place_calls(where, profile.purposes, form.interests, profile.required_needs)
@@ -333,7 +346,7 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
                 "destination": dest,
                 "sort_by": "value",
                 "limit": 20,
-                **({"needs": profile.required_needs} if profile.required_needs else {}),
+                **({"needs": stay_needs} if stay_needs else {}),
             },
         ),
         *stay_band_calls(form, profile.trip_budget, profile.required_needs),

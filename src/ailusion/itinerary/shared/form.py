@@ -101,6 +101,63 @@ TABLE_A = [
 ]
 
 
+# Mã nhu cầu đúng mã của MCP (`_nhu_cau.NHU_CAU`) -> nghĩa (Intake đổi chữ user gõ ra mã;
+# Planner, ghi chú kết quả ghi bằng nghĩa).
+NEED_NAMES: dict[str, str] = {
+    "wheelchair": "lối vào cho xe lăn",
+    "wheelchair_toilet": "nhà vệ sinh cho xe lăn",
+    "wheelchair_parking": "chỗ đỗ xe cho xe lăn",
+    "hearing_assist": "hỗ trợ người khiếm thính",
+    "kids": "phù hợp trẻ em",
+    "high_chair": "ghế cao cho bé",
+    "kids_menu": "thực đơn trẻ em",
+    "playground": "sân chơi",
+    "baby_changing": "bàn thay tã / phòng cho con bú",
+    "vegetarian": "có món chay",
+    "vegan": "có món thuần chay",
+    "late_night_food": "đồ ăn khuya",
+    "breakfast": "phục vụ bữa sáng",
+    "alcohol": "có đồ uống có cồn",
+    "private_room": "phòng ăn riêng",
+    "car_parking": "có chỗ đỗ ô tô",
+    "free_parking": "đỗ xe miễn phí",
+    "card_payment": "thanh toán thẻ",
+    "pets": "cho mang chó theo",
+    "wifi": "Wi-Fi",
+    "restroom": "có nhà vệ sinh",
+    "luggage_storage": "giữ hộ hành lý",
+    "outdoor_seating": "chỗ ngồi ngoài trời",
+    "reservations": "nhận đặt chỗ",
+    "groups": "hợp đi nhóm đông",
+    "quiet": "yên tĩnh",
+}
+
+# Nhu cầu chỉ có nghĩa với quán ăn (chỗ chơi, chỗ ở không có "món chay", "ghế cao cho bé"): chỉ
+# xét ở quán — trước đây bãi biển, bảo tàng cũng bị ghi "chưa rõ có đáp ứng nhu cầu bắt buộc".
+MEAL_NEEDS = frozenset(
+    {"vegetarian", "vegan", "high_chair", "kids_menu", "late_night_food", "breakfast",
+     "alcohol", "private_room"}
+)  # fmt: skip
+
+
+def needs_for(kind: str, needs: list[str]) -> list[str]:
+    """Nhu cầu áp cho một chỗ loại `kind` ("visit" | "meal" | "stay")."""
+    return [n for n in needs if kind == "meal" or n not in MEAL_NEEDS]
+
+
+def meets_needs(kind: str, status: dict[str, str], needs: list[str]) -> bool:
+    """Chỗ có bằng chứng ("yes") đáp ứng mọi nhu cầu bắt buộc áp cho loại của nó."""
+    return all(status.get(n) == "yes" for n in needs_for(kind, needs))
+
+
+def unknown_needs(kind: str, status: dict[str, str], needs: list[str]) -> list[str]:
+    return [n for n in needs_for(kind, needs) if status.get(n, "unknown") == "unknown"]
+
+
+def need_text(needs: list[str]) -> str:
+    return ", ".join(NEED_NAMES.get(n, n) for n in needs)
+
+
 # Bước 14: mỗi nhóm so lịch theo thứ tự này. (số đo, "min" | "max")
 SORT_ORDER: dict[str, list[tuple[str, str]]] = {
     "P1": [("cost", "min"), ("num_stops", "max"), ("needs_met", "max")],

@@ -54,9 +54,12 @@ from ..shared.form import (
     busy_meals,
     day_allowance,
     hhmm,
+    meets_needs,
     must_time_text,
     must_window,
+    need_text,
     needed_meals,
+    needs_for,
     to_minutes,
 )
 from ..shared.math import km, median
@@ -869,9 +872,9 @@ def _simulate(
             for a, _b in meal_only:
                 if leave > a:
                     mine.append(f"{p.name} chạm khung chỉ ăn uống từ {hhmm(a)}")
-        for need in required_needs:
-            if p.need_status.get(need) == "no":
-                mine.append(f"{p.name} thiếu nhu cầu bắt buộc: {need}")
+        lacking = [n for n in needs_for(p.kind, required_needs) if p.need_status.get(n) == "no"]
+        if lacking:
+            mine.append(f"{p.name} thiếu nhu cầu bắt buộc: {need_text(lacking)}")
         return arrive, start, leave, int(travel), max(0, start - arrive), mine, todo
 
     for k, pid in enumerate(plan.stops):
@@ -1165,7 +1168,17 @@ def meals_by_day(state: dict, places: dict[str, Place]) -> dict[int, list[str]]:
         for day, codes in day_codes_of(state).items()
     }
     every = [pid for pid in state["codes"].values() if places[pid].kind == "meal"]
-    return {day: own + [m for m in every if m not in own] for day, own in by_day.items()}
+    # Quán đáp ứng nhu cầu ăn uống bắt buộc (món chay...) dùng trước quán chưa rõ.
+    needs = profile_of(state).required_needs
+
+    def fits(pid: str) -> bool:
+        return meets_needs("meal", places[pid].need_status, needs)
+
+    return {
+        day: sorted(own, key=lambda m: not fits(m))
+        + sorted((m for m in every if m not in own), key=lambda m: not fits(m))
+        for day, own in by_day.items()
+    }
 
 
 async def kiem_lich(state: ItineraryState, ctx: Ctx) -> dict:
