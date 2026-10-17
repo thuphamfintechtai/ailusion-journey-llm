@@ -705,9 +705,15 @@ async def cham(state: ItineraryState, ctx: Ctx) -> dict:
         # Mọi chỗ ở dùng được có giá (không chỉ vài chỗ sao cao nhất đem so đường đi): 6 chỗ đó hay
         # toàn chỗ rẻ, ngân sách 8 triệu lại chọn phòng 390 nghìn/đêm.
         priced = [x for x in usable if x.price]
-        if budget and form.spend_style != "unlimited" and priced:
+        nights = max(1, form.num_nights)
+        target = None
+        if budget and form.spend_style != "unlimited":
             target = budget * stay_target_share(form)
-            nights = max(1, form.num_nights)
+        elif form.budget_unknown and profile.price_levels:
+            # Chưa biết ngân sách: phòng giá thường gặp ở điểm đến (trung vị) — "không giới hạn" ở ô
+            # ngân sách là chưa biết bao nhiêu, không phải lấy resort sao cao nhất như khi trống.
+            target = profile.price_levels["stay"]["median"] * nights * rooms
+        if target and priced:
 
             def gap(x: Place) -> float:
                 return abs(x.price * nights * rooms - target) / target  # type: ignore[operator]

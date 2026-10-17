@@ -338,6 +338,13 @@ async def test_budget_levels_reach_the_response(llm_calls: list[str]) -> None:
     assert per_day.budget_level and per_day.budget_level.budget_text == (
         "10 triệu mỗi người mỗi ngày × 2 người × 3 ngày = 60 triệu cả đoàn cả chuyến"
     )
+    # Ô ngân sách "Không giới hạn" = chưa biết bao nhiêu: không hỏi lại, lịch theo mức thường gặp.
+    unknown = await _run(_form(budget=None, budget_unknown=True))
+    assert unknown.status == "ok" and unknown.budget_level
+    assert (unknown.budget_level.kind, unknown.budget_level.title) == (
+        "unknown",
+        "Chưa có ngân sách",
+    )
 
 
 async def test_kids_skip_unfit_places_and_the_food_they_are_allergic_to(

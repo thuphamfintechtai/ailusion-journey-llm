@@ -39,11 +39,12 @@ Ghép 3 phương án: tổng ước nằm trong khoảng ngân sách
 |---|---|
 | Form FE ([trip-form-sheet.tsx](../../ailusion-journey-fe/src/components/itinerary/trip-form-sheet.tsx)) | Chip 3 / 5 / 8 / 12 / 20 / 30 triệu + ô gõ tuỳ ý (`BUDGETS`) |
 | `budget_unit` | `group_trip` (cả đoàn cả chuyến, mặc định) · `person_trip` (mỗi người cả chuyến) · `person_day` (mỗi người mỗi ngày) |
-| `spend_style` | `normal` (±5%) · `luxury_within_budget` — FE ghi "Sang, không vượt ngân sách" · `unlimited` (bỏ mọi luật tiền) |
+| `spend_style` | `normal` (±5%) · `luxury_within_budget` — FE ghi "Sang, không vượt ngân sách" · `unlimited` (bỏ mọi luật tiền, chọn theo chất lượng) — FE ghi "Không ngại chi thêm" (trước ghi "Không giới hạn", trùng chữ với ô ngân sách mà khác nghĩa) |
+| `budget_unknown` | Ô ngân sách chọn **"Không giới hạn" = chưa biết bao nhiêu**, KHÔNG phải chi thoải mái: không hỏi lại H3; chỗ ở nhắm giá phòng thường gặp ở điểm đến (trung vị `price_stats_vnd`, `stay_band_calls` + chọn chỗ ở ở `cham`) — không có ngân sách thì code vốn lấy chỗ sao cao nhất (resort); không đặt tiền mỗi ngày (không báo "vượt ngân sách ngày"); đầu kết quả khung "Chưa có ngân sách" (`kind` `unknown`): "Lịch theo mức chi thường gặp ở Nha Trang (phòng khoảng 1,4 triệu/đêm), không chọn chỗ đắt nhất: tổng ước … Có ngân sách thì nhập để lịch bám theo" |
 | `budget_min` | Mức dưới khi user chọn **khoảng** ở câu hỏi H3. FE tự xoá khi user nhập lại ngân sách / đổi cách tính (`set` trong trip-form-sheet) |
 | `prepaid_tickets` | Tiền vé đi về đã mua, mỗi người — trừ khỏi ngân sách |
 | Chat ([chat/trip_info.py](../src/ailusion/chat/trip_info.py), [chat/prompts.py](../src/ailusion/chat/prompts.py)) | Tự đọc `budget_million` ("15tr", "2 triệu mỗi người") và `budget_hard` (có được vượt không). FE `groupBudget` đổi form về cả đoàn cả chuyến khi báo cho chat; `budget_hard = true` khi mức chi "Sang, không vượt" |
-| Câu hỏi H3 (`questions_for`, [coordinator/profile.py](../src/ailusion/itinerary/coordinator/profile.py)) | Thiếu ngân sách thì hỏi, mỗi lựa chọn là 1 khoảng: Dưới 3tr = tối đa 3tr · 3–6tr · 6–10tr · Trên 10tr = từ 10tr, không trần |
+| Câu hỏi H3 (`questions_for`, [coordinator/profile.py](../src/ailusion/itinerary/coordinator/profile.py)) | Thiếu ngân sách (và không chọn "Không giới hạn") thì hỏi, mỗi lựa chọn là 1 khoảng: Dưới 3tr = tối đa 3tr · 3–6tr · 6–10tr · Trên 10tr = từ 10tr, không trần · Chưa biết = `budget_unknown` |
 
 ## 2. Khoảng ngân sách và mốc ([shared/form.py](../src/ailusion/itinerary/shared/form.py))
 

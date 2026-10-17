@@ -258,6 +258,8 @@ QUESTIONS: dict[str, dict[str, Any]] = {
                 "Trên 10 triệu",
                 {"budget": None, "budget_min": 10_000_000, "budget_unit": "group_trip"},
             ],
+            # Chưa biết bao nhiêu (không phải "chi thoải mái"): lên theo mức chi thường gặp.
+            ["Chưa biết", {"budget": None, "budget_min": None, "budget_unknown": True}],
         ],
     },
     "H6": {
@@ -303,7 +305,7 @@ def questions_for(form: TripForm, profile: TripProfile) -> list[str]:
         out.append("H5")
     if profile.main_purpose == "adventure" and not form.walking_level:
         out.append("H4")
-    if not form.budget and not form.budget_min:
+    if not form.budget and not form.budget_min and not form.budget_unknown:
         out.append("H3")
     if form.num_days >= 3 and not form.purposes and not form.interests.strip():
         out.append("H2")

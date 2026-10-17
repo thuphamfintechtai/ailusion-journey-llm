@@ -284,13 +284,21 @@ STAY_BAND = (0.6, 1.4)
 
 
 def stay_band_calls(
-    form: TripForm, trip_budget: int | None, needs: list[str]
+    form: TripForm,
+    trip_budget: int | None,
+    needs: list[str],
+    levels: dict[str, dict[str, int]] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
-    if not trip_budget or not form.num_nights or form.stay_booked:
+    if not form.num_nights or form.stay_booked:
+        return []
+    if trip_budget:
+        target = trip_budget * stay_target_share(form) / form.num_nights / rooms_for(form)
+    elif form.budget_unknown and levels:
+        # Chưa biết ngân sách: quanh giá phòng thường gặp ở điểm đến (trung vị).
+        target = levels["stay"]["median"]
+    else:
         return []
     needs = needs_for("stay", needs)
-    rooms = rooms_for(form)
-    target = trip_budget * stay_target_share(form) / form.num_nights / rooms
     return [
         (
             "find_stays",
@@ -350,7 +358,7 @@ async def tim_kiem(state: ItineraryState, ctx: Ctx) -> dict:
                 **({"needs": stay_needs} if stay_needs else {}),
             },
         ),
-        *stay_band_calls(form, profile.trip_budget, profile.required_needs),
+        *stay_band_calls(form, profile.trip_budget, profile.required_needs, profile.price_levels),
         *(
             [("find_places", {"destination": dest, **REST_CAFES})]
             if form.nap in ("auto", "cafe") and any(d.nap for d in profile.days)
