@@ -119,6 +119,10 @@ def profile_trip(
                 continue
             go = travel_to.get(f"busy:{d}", BUSY_TRAVEL_MIN)
             b_start = max(start, to_minutes(slot.busy_start) - go)
+            # Bận hẳn ngoài giờ của ngày (bận 07:00–09:00 mà tới nơi buổi chiều): không chặn gì —
+            # trước đây ra khung ngược "14:45–09:00" đưa Planner.
+            if b_start >= end or (slot.busy_end and to_minutes(slot.busy_end) <= start):
+                continue
             if slot.busy_end:
                 b_end = to_minutes(slot.busy_end)
                 blocked.append(f"{hhmm(b_start)}–{hhmm(b_end)}")

@@ -29,12 +29,13 @@ from pydantic import BaseModel, Field, model_validator
 from .coordinator.levels import budget_level
 from .coordinator.profile import QUESTIONS
 from .coordinator.rank import budget_note
-from .coordinator.simulate import simulate
+from .coordinator.simulate import BUSY, simulate
 from .shared.context import Ctx
 from .shared.fares import cars_for, city_of, compare, is_night
 from .shared.form import (
     GROUP_NAMES,
     PURPOSE_NAMES,
+    BusySlot,
     TripForm,
     hhmm,
     money,
@@ -97,7 +98,7 @@ class TravelAlt(BaseModel):
 
 
 class Item(BaseModel):
-    type: Literal["start", "visit", "meal", "rest", "back"]
+    type: Literal["start", "visit", "meal", "rest", "busy", "back"]
     start: str
     end: str
     name: str
@@ -577,6 +578,33 @@ def to_response(state: dict[str, Any], thread_id: str, seconds: float) -> Itiner
     )
 
 
+def user_busy(form: TripForm, day: int, a: int, b: int) -> BusySlot | None:
+    """Lịch bận user nhập ứng với khung chặn (a, b) của ngày: cùng giờ xong, không thì giờ bắt
+    đầu gần nhất (khung chặn bắt đầu sớm hơn giờ user nhập một quãng đường tới chỗ bận)."""
+    slots = [s for s in form.busy_slots if s.day == day and s.busy_start and not s.one_person]
+    same = [s for s in slots if s.busy_end and to_minutes(s.busy_end) == b]
+    if same:
+        return same[0]
+    return min(slots, key=lambda s: abs(to_minutes(s.busy_start or "00:00") - a), default=None)
+
+
+def idle_note(plan: DayPlan, run: Run, form: TripForm, state: dict[str, Any]) -> str | None:
+    """Câu cho ngày không xếp gì (lịch trống, không bận): vì sao trống. Ngày có việc thì None."""
+    if run.stops or run.busy:
+        return None
+    window = next((d for d in profile_of(state).days if d.day == plan.day), None)
+    if window is None:
+        return None
+    if plan.day == form.num_days and window.day_end == window.day_start:
+        return f"Không xếp chỗ đi: rời chỗ ở lúc {window.day_end} cho kịp chuyến về."
+    if plan.day == 1 and form.arrival_time and window.free_minutes == 0:
+        return f"Không xếp chỗ đi: tới chỗ ở khoảng {window.day_start}, nghỉ ngơi."
+    return (
+        f"Không xếp chỗ đi: ngày này chỉ rảnh {window.day_start}–{window.day_end}, không đủ "
+        "cho một chỗ chơi."
+    )
+
+
 def night_price(state: dict[str, Any], form: TripForm) -> int | None:
     """Tiền 1 đêm cả đoàn (giá phòng × số phòng, 2 người 1 phòng); đã đặt chỗ thì 0."""
     if form.stay_booked:
@@ -784,8 +812,32 @@ def _day(
             name=f"Xuất phát từ {stay_name}",
         )
     ]
+    # Khung bận của user bước chạy thử đã chèn: hiện đúng giờ user nhập (khung chặn đã trừ trước
+    # đường tới chỗ bận); chặng sau giờ bận đi từ chỗ bận (chưa biết vị trí: không có km, giá).
+    busy_at: dict[int, list[tuple[int, int]]] = {}
+    for k, a, b in run.busy:
+        busy_at.setdefault(k, []).append((a, b))
+
+    def busy_items(k: int) -> list[Item]:
+        out = []
+        for a, b in busy_at.get(k, []):
+            slot = user_busy(form, plan.day, a, b)
+            out.append(
+                Item(
+                    type="busy",
+                    start=slot.busy_start if slot and slot.busy_start else hhmm(a),
+                    end=slot.busy_end if slot and slot.busy_end else hhmm(b),
+                    name="Lịch bận" + (f": {slot.place}" if slot and slot.place else ""),
+                    travel_mode=mode,
+                )
+            )
+        return out
+
     for k, s in enumerate(run.stops):
         p = places[s.place_id]
+        if k in busy_at:
+            items += busy_items(k)
+            prev = BUSY
         items.append(
             Item(
                 type="meal" if p.kind == "meal" else "visit",
@@ -852,6 +904,10 @@ def _day(
             items.append(rest)
             prev = at
     last_travel = run.back - (run.stops[-1].leave if run.stops else to_minutes(plan.leave_stay))
+    if len(run.stops) in busy_at:  # bận sau chỗ cuối: đi bận rồi về
+        items += busy_items(len(run.stops))
+        last_travel = run.back - max(b for _a, b in busy_at[len(run.stops)])
+        prev = BUSY
     items.append(
         Item(
             type="back",
@@ -866,6 +922,11 @@ def _day(
             **(leg(prev, STAY, run.back) if run.stops else {"travel_mode": mode}),
         )
     )
+    # Ngày không xếp gì (tới nơi tối, rời chỗ ở sớm để về): không hiện "xuất phát / về" cùng giờ,
+    # ghi rõ vì sao ngày trống.
+    idle = idle_note(plan, run, form, state)
+    if idle:
+        items = []
     temp_min, temp_max, sessions = day_weather(state, plan.day, date.isoformat())
     crowd, crowd_note = crowd_of(date, state.get("festival_dates"))
     night = (night_price(state, form) or 0) if plan.day <= form.num_nights else 0
@@ -884,7 +945,7 @@ def _day(
         maps_url=(state.get("maps") or {}).get(plan.id),
         route_paths=((state.get("paths") or {}).get(plan.id) or {}).get("paths") or [],
         route_precision=((state.get("paths") or {}).get(plan.id) or {}).get("precision") or 5,
-        area_note=area_note([places[s.place_id] for s in run.stops], state, matrix or {}),
+        area_note=idle or area_note([places[s.place_id] for s in run.stops], state, matrix or {}),
         meal_notes=day_meal_notes(state, plan.day),
         lunar=str(to_lunar(date)),
         holiday=holiday_of(date, state.get("festival_dates")),
@@ -1257,6 +1318,10 @@ def itinerary_markdown(resp: ItineraryResponse) -> str:
             if item.type in ("visit", "meal"):
                 price = f" · {_money(item.price)}" if item.price else ""
                 lines.append(f"- {item.start} {ICONS[item.type]} {item.name}{price}")
+            elif item.type == "busy":
+                lines.append(f"- {item.start}–{item.end} ⏳ {item.name}")
+        if not day.items and day.area_note:
+            lines.append(f"- {day.area_note}")
         if day.issues:
             lines.append(f"- ⚠️ {'; '.join(day.issues)}")
     if cb := chosen.cost_breakdown:

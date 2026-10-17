@@ -78,7 +78,7 @@ Mục đích phiêu lưu + `needs_care` → mức đi bộ tối đa M1.
 | Đi khuya (`night_out`) | ngày kết thúc 23:30 | — |
 | User hẹn chỗ buổi tối muộn hơn giờ về mặc định | kéo ngày tới giờ hẹn + `MUST_EVENING_STAY` 90 phút (tối đa 23:30) | tự đặt |
 | Ngày cuối không nhập giờ đi | `DEFAULT_DEPARTURE` 15:00; kết thúc = giờ đi − thủ tục `CHECKIN_MIN` 90 − dự phòng `DEPARTURE_BUFFER_MIN` 30 − bến 30 | tự đặt |
-| Lịch bận | chặn từ (giờ bận − phút đi tới chỗ bận, mặc định `BUSY_TRAVEL_MIN` 15) tới giờ xong; thiếu giờ → hỏi lại H5 | — |
+| Lịch bận | chặn từ (giờ bận − phút đi tới chỗ bận, mặc định `BUSY_TRAVEL_MIN` 15) tới giờ xong; thiếu giờ → hỏi lại H5; bận hẳn ngoài giờ của ngày (bận 07:00–09:00 mà tới nơi buổi chiều) → bỏ, không chặn gì. Bước chạy thử tự chèn khung bận vào lịch như nghỉ trưa: chỗ nào không kịp xong trước giờ bận thì đi sau giờ bận (+`BUSY_TRAVEL_MIN` từ chỗ bận); bận sau chỗ cuối thì đi bận rồi về; giờ bận tới trong lúc nghỉ trưa thì không nghỉ; lịch ngày hiện mục "Lịch bận" đúng giờ user nhập | — |
 | Nghỉ trưa | ngày bắt đầu ≤ `NAP_IF_START_BY` 09:00 **và** kết thúc ≥ `NAP_IF_END_FROM` 17:00, `nap` ≠ none → nghỉ `NAP_MIN` 90 phút; giờ rảnh trừ 90 phút | user |
 | Chỗ nghỉ trưa (`auto`) | quán trưa → chỗ ở ≤ `NAP_HOME_MAX` 20 phút thì về chỗ ở, xa hơn thì quán cà phê gần quán trưa (≤ `NAP_SPOT_KM` 4 km) | tự đặt |
 | Giá nghỉ trưa | quán cà phê `CAFE_REST_PRICE` 50k/người · khách sạn `HOTEL_REST_SHARE` 0,5 × giá phòng 1 đêm | tự đặt |
@@ -90,7 +90,7 @@ Mục đích phiêu lưu + `needs_care` → mức đi bộ tối đa M1.
 |---|---|---|
 | Khung giờ ăn (`MEALS`) | sáng 06:30–10:00 · trưa 10:30–14:00 · tối 18:00–20:00 | user |
 | Mốc chờ tới (`*_TARGET`) | sáng 06:30–08:30 · trưa 11:30–13:00 (dịch tối đa 1 tiếng) · tối 18:00 | user |
-| Bữa bắt buộc theo giờ bắt đầu ngày (`required_meals`) | ≤ 08:00: đủ sáng + trưa + tối · 08:00–11:00: bữa sáng tuỳ chọn · sau 11:00: không bữa sáng · từ 13:00: không ép bữa trưa · ngày phải phủ ≥ `MEAL_MIN_OVERLAP` 30 phút của khung mới tính | user |
+| Bữa bắt buộc theo giờ bắt đầu ngày (`required_meals`) | ≤ 08:00: đủ sáng + trưa + tối · 08:00–11:00: bữa sáng tuỳ chọn · sau 11:00: không bữa sáng · từ 13:00: không ép bữa trưa · ngày phải phủ ≥ `MEAL_MIN_OVERLAP` 30 phút của khung mốc VÀ cả khung giờ ăn còn chứa được bữa ngắn nhất (`MEAL_STAY` 45 phút): về chỗ ở trước 18:30 / bay về 21:00 (rời chỗ ở 18:30) thì không bắt bữa tối, ghi "Không xếp bữa tối: ngày kết thúc 18:30"; tới nơi 19:45 thì "Không xếp bữa tối: ngày bắt đầu 19:45". Bữa cuối ngày không kịp ăn rồi về (về trước 18:45) thì bỏ, không báo thiếu bữa, ghi "không đủ giờ ăn tối … ăn gần chỗ ở" | user |
 | Bữa sáng là việc đầu tiên | ngày bắt đầu ≤ 08:00 → điểm đầu là quán, trước `BREAKFAST_FIRST_BY` 09:00 | user |
 | 2 bữa cách nhau | ≥ `MIN_MEAL_GAP` 150 phút | user |
 | Mỗi khung giờ ăn | 1 quán | user |
@@ -209,7 +209,8 @@ Chi tiết: [budget-README.md](budget-README.md) mục 5.
 | Giữ chắc | chỗ user chọn; quán khớp món user nhắc (tối đa `WANTED_MEALS` 3 mỗi món); chỗ chơi khớp thứ user nhắc (tối đa `WANTED_VISITS` 4) | |
 | Số quán | mỗi bữa bắt buộc `MEAL_CHOICES` 2 quán (+3); mỗi chuỗi 1 chi nhánh; đa dạng món (`MEALS_PER_CUISINE` 2) | |
 | Ma trận phút đi | tối đa `MAX_MATRIX_POINTS` 45 điểm, chia ô `TILE` 12 (tool nhận 25); thiếu cặp → ước đường chim bay × `DETOUR` 1,4 ở `CITY_KMH` (25 km/h, buýt 15) + `PARKING_MIN` 3 phút. Không đủ điểm cho cả chỗ chơi lẫn quán: chia theo tỉ lệ nhu cầu (`meal_points`; nhu cầu chỗ chơi `visit_need` = sức chứa các ngày ước theo đường chim bay + `SPARE_VISITS` 2 mỗi ngày) — trước đây quán lấy trước, Đà Lạt 5 ngày còn 13 điểm cho chỗ chơi | |
-| Sức chứa ngày (`capacity`) | theo giờ rảnh, thời gian ở điển hình, phút đi điển hình; Planner nhận thêm `SPARE_VISITS` 2 chỗ dư mỗi ngày | |
+| Sức chứa ngày (`capacity`) | theo giờ rảnh, thời gian ở điển hình, phút đi điển hình; Planner nhận thêm `SPARE_VISITS` 2 chỗ dư mỗi ngày. Không đủ giờ cho 1 chỗ thì 0 (trước đây ít nhất 1) | |
+| Ngày không xếp (`idle_days`) | sức chứa 0, không có bữa bắt buộc, không có chỗ user ghim (tới nơi 19:45 về chỗ ở 20:45; rời chỗ ở 08:00 để kịp chuyến về): không chia chỗ, không gọi Planner, code tạo lịch trống; kết quả ghi "Không xếp chỗ đi: …" thay vì báo lỗi | |
 | Mã | D… chỗ chơi, Q… quán; theo số review giảm dần | |
 | Chia ngày (`split_by_day`) | mỗi ngày 1 mỏ neo (chỗ nổi tiếng trong top `ANCHOR_POOL` × số ngày, xa các mỏ neo trước); chỗ khác vào ngày có phút đi trung bình tới cụm ít nhất, còn mở cửa (giờ mở giao khung ngày đủ thời gian ở), chưa có chỗ cùng loại, chưa đầy; không được thì nới luật cùng loại, rồi số lượng; chỗ user chọn có ngày thì vào đúng ngày. Ngày có chỗ chơi cách chỗ đó ≤ `NEAR_MIN` 30 phút được xét **trước**, kể cả khi đã có chỗ cùng loại (mỗi lịch vẫn chỉ 1 chỗ mỗi loại); ngày gần đã đầy mới sang ngày xa. Không trộn 2 vùng trong 1 ngày khi không cần (chuyến Đà Nẵng: chùa thứ 2 ở Hội An từng bị đẩy sang ngày ở Đà Nẵng), mà trần mỗi ngày giữ nguyên nên không ngày nào thiếu chỗ (bản chặt "chỉ ngày gần" làm ngày Bà Nà còn 2 chỗ, 0 quán) | |
 | Quán theo ngày | đủ ≥ `MEALS_PER_DAY` 3 quán × số ngày thì chia theo cụm gần nhất (tránh 2 quán cùng món: `SAME_CUISINE_MIN` 15 phút), ngày có chỗ chơi cách ≤ `NEAR_MIN` trước, ngày gần đã đủ quán mới sang ngày khác; ít quán thì ngày nào cũng dùng chung | |
@@ -239,7 +240,7 @@ Xem [planner-README.md](planner-README.md): luật 1–10 trong prompt, `plan_er
 | Nghỉ trưa | tự chèn sau bữa trưa ở ngày dài (mục 3) |
 | Trạng thái | `fail` lỗi khi ở ít · `risky` lỗi khi ở lâu · `warn` vượt tiền nên tiêu mỗi ngày · `ok` |
 | Tốc độ | `place_meals` chấm 2 vòng: chạy thử ở ít mọi cách xếp, ở lâu chỉ cho các cách đang hoà (cùng kết quả); trong 1 lượt `kiem_lich` nhớ kết quả chạy thử theo lịch (`MAX_CACHED_RUNS` 20.000, trả bản sao). Chuyến Huế 16/10: cả chuyến 340 → 123 giây (BE chờ tối đa `LLM_PLAN_TIMEOUT` 300 giây) |
-| Lỗi cứng khác | chưa có chỗ ngủ đêm đó; thiếu chỗ user chọn; ngày không còn chỗ hợp lệ; rời chỗ ở sớm hơn giờ bắt đầu; thiếu nhu cầu bắt buộc |
+| Lỗi cứng khác | chưa có chỗ ngủ đêm đó; thiếu chỗ user chọn; ngày không còn chỗ hợp lệ (chỉ khi ngày có bữa bắt buộc / chỗ user chọn — lịch trống của ngày không xếp là đúng); rời chỗ ở sớm hơn giờ bắt đầu; thiếu nhu cầu bắt buộc |
 
 ## 13. Xếp hạng và ghép phương án
 

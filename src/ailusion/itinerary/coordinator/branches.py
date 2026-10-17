@@ -41,6 +41,7 @@ BRANCH_KEYS = (
     "codes",
     "day_codes",
     "must_codes",
+    "idle_days",
     "matrix",
     "km_matrix",
     "notes",

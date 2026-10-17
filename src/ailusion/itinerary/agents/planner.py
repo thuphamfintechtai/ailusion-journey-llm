@@ -50,7 +50,7 @@ PLANNER = """Bạn là Agent Planner trong hệ thống lập lộ trình du l�
 
 1. Chỉ dùng mã chỗ trong danh sách (D… chỗ đi chơi, Q… quán ăn). Không bịa chỗ.
 2. Giờ rời chỗ ở (`leave_stay`) không sớm hơn giờ bắt đầu ngày.
-3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày; không chạm khung bị chặn. Khung "chỉ ăn uống" chỉ được xếp quán Q….
+3. Cả lịch (kể cả thời gian ở lại và phút đi về chỗ ở) phải nằm trong giờ rảnh của ngày. Khung "bị chặn" là giờ bận của user: hệ thống tự chèn vào lịch như nghỉ trưa (chỗ nào không kịp xong trước giờ bận thì đi sau giờ bận), không ghi vào `stops` — cứ xếp chỗ trước giờ bận rồi chỗ sau giờ bận theo đúng thứ tự, KHÔNG bỏ cả buổi còn lại; "rảnh … phút" đã trừ giờ bận. Khung "chỉ ăn uống" chỉ được xếp quán Q….
 4. Không xếp chỗ "đóng cửa" ngày đó; tới nơi trong giờ mở cửa.
 5. Mỗi ngày ít nhất 2 lịch, không có 2 lịch giống hệt nhau; `id` mỗi lịch (L1, L2, …) không trùng nhau trong ngày. Mỗi lịch không có 2 chỗ chơi D… cùng `loại` (cột thứ 3 của danh sách: 2 chùa, 2 bảo tàng, 2 spa… là lỗi; loại "–" là chưa rõ loại, không tính). Ưu tiên chỗ ghi "hợp mục đích".
 6. Bữa ăn: dòng "Ngày …" ghi bữa BẮT BUỘC của ngày (và bữa tuỳ chọn / không xếp), tính sẵn theo giờ bắt đầu ngày. Mỗi bữa bắt buộc 1 quán Q… trong `stops`, đặt gần đúng chỗ (bữa sáng đầu ngày nếu có, trưa giữa ngày, tối cuối ngày) — hệ thống tự dời quán vào đúng giờ ăn và bỏ quán thừa / sai giờ. Giữa 2 bữa là chỗ chơi, không xếp 2 quán liền nhau; mọi chỗ bán đồ ăn (kể cả "khu ăn uống", "ăn vặt") tính là 1 bữa; quán loại "bữa sáng" chỉ làm bữa sáng; thiếu bữa bắt buộc là lỗi. `leave_stay` = giờ bắt đầu ngày.
@@ -424,9 +424,15 @@ async def xep_lich(state: ItineraryState, ctx: Ctx) -> dict:
     groups = visit_groups(state)
     allowed = day_codes_of(state)
     required = must_codes_of(state)
-    all_days = [d.day for d in profile.days]
+    # Ngày không đủ giờ cho 1 chỗ (tới nơi tối, rời chỗ ở sớm để về): lịch trống, không gọi
+    # Planner — trước đây Planner vẫn được giao ngày đó, lịch nào cũng lỗi.
+    idle = set(state.get("idle_days") or [])
+    all_days = [d.day for d in profile.days if d.day not in idle]
     starts = {d.day: d.day_start for d in profile.days}
-    plans: dict[str, dict[str, Any]] = {}
+    plans: dict[str, dict[str, Any]] = {
+        f"N{d}-L1": plan_to_dict(DayPlan(id=f"N{d}-L1", day=d, leave_stay=starts[d], stops=[]))
+        for d in sorted(idle)
+    }
     calls_total, usage_total = 0, []
     for i in range(0, len(all_days), DAYS_PER_PLANNER_CALL):
         batch = all_days[i : i + DAYS_PER_PLANNER_CALL]

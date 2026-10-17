@@ -16,7 +16,7 @@ from itertools import combinations
 from typing import Any
 
 from ..shared.context import Ctx
-from ..shared.form import NEAR_MIN, day_allowance, money, required_meals, to_minutes
+from ..shared.form import MEAL_STAY, NEAR_MIN, day_allowance, money, required_meals, to_minutes
 from ..shared.math import km, median, pareto_tiers
 from ..shared.models import (
     STAY,
@@ -56,7 +56,6 @@ STAY_BY_TYPE: list[tuple[tuple[str, ...], int, int]] = [
     (("spa", "massage"), 60, 120),
     (("núi", "thác", "rừng", "hang"), 90, 180),
 ]
-MEAL_STAY = (45, 75)
 DEFAULT_STAY = (60, 90)
 
 # Giá ước mỗi người (VND) cho chỗ chưa có giá thật sau khi đã hỏi DB và Agent Budget. Ưu tiên
@@ -200,8 +199,22 @@ def estimate_minutes(a: Place, b: Place, travel_mode: str | None) -> float:
 
 
 def capacity(days: list[DayWindow], typical_stay: float, typical_hop: float) -> list[int]:
+    """Số chỗ chơi mỗi ngày chứa được. Ngày không đủ giờ cho 1 chỗ (tới nơi 19:45, về chỗ ở 20:45;
+    rời chỗ ở 08:00 để kịp chuyến về) là 0 — trước đây ít nhất 1, ngày đó vẫn bị chia chỗ."""
     per = max(1.0, typical_stay + typical_hop)
-    return [max(1, math.floor(d.free_minutes / per)) for d in days]
+    return [max(0, math.floor(d.free_minutes / per)) for d in days]
+
+
+def idle_days(days: list[DayWindow], caps: list[int], places: dict[str, Place]) -> list[int]:
+    """Ngày không xếp lịch: không đủ giờ cho 1 chỗ chơi (`capacity` 0), không có bữa bắt buộc,
+    không có chỗ user ghim vào ngày đó. Code tự tạo lịch trống, không đưa Planner."""
+    return [
+        d.day
+        for d, cap in zip(days, caps, strict=True)
+        if cap == 0
+        and not required_meals(d.day_start, d.day_end)
+        and not any(p.must and p.must_day == d.day for p in places.values())
+    ]
 
 
 SPARE_VISITS = 2  # mỗi ngày thêm ngần này chỗ chơi dư để Planner có lựa chọn khi xếp lịch khác nhau
@@ -859,15 +872,17 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         prefix = "Q" if p.kind == "meal" else "D"
         codes[f"{prefix}{sum(c.startswith(prefix) for c in codes) + 1}"] = p.place_id
     code_of = {pid: c for c, pid in codes.items()}
+    idle = idle_days(profile.days, caps, places)
     by_day = split_by_day(
         pool,
-        [d.day for d in profile.days],
+        [d.day for d in profile.days if d.day not in idle],
         matrix,
         form.travel_mode,
         {d.day: (to_minutes(d.day_start), to_minutes(d.day_end)) for d in profile.days},
         used,
     )
     day_codes = {str(d): [code_of[pid] for pid in pids] for d, pids in by_day.items()}
+    day_codes.update({str(d): [] for d in idle})
     # Chỗ user chọn nằm ở ngày nào thì mọi lịch của ngày đó phải có.
     must_codes = {d: [c for c in cs if places[codes[c]].must] for d, cs in day_codes.items()}
     await ctx.log(
@@ -887,6 +902,7 @@ async def chot_danh_sach(state: ItineraryState, ctx: Ctx) -> dict:
         "codes": codes,
         "day_codes": day_codes,
         "must_codes": {d: cs for d, cs in must_codes.items() if cs},
+        "idle_days": idle,
         "places": dump_places(places),  # ngày ghim có thể đã dời (`moved_closed_days`)
         "matrix": matrix,
         "km_matrix": km_matrix,

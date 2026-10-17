@@ -35,6 +35,7 @@ from ..shared.form import (
     BREAKFAST_FIRST_BY,
     BREAKFAST_IF_START_BY,
     BREAKFAST_TARGET,
+    BUSY_TRAVEL_MIN,
     DINNER,
     DINNER_FREE_MAX,
     FULL_DAY_MIN,
@@ -42,6 +43,7 @@ from ..shared.form import (
     LUNCH,
     LUNCH_TARGET,
     MEAL_MIN_OVERLAP,
+    MEAL_STAY,
     MEALS,
     MIN_MEAL_GAP,
     MIN_VISITS,
@@ -276,6 +278,12 @@ def drop_bad_meals(
         in_window = any(to_minutes(a) <= st.start <= to_minutes(b) for a, b in meal_windows)
         # Bữa tối cuối ngày được trống tới DINNER_FREE_MAX trước giờ ăn (thời gian tự do).
         last = k == len(run.stops) - 1
+        # Bữa cuối ngày không kịp ăn (bữa ngắn nhất) rồi về chỗ ở trước giờ kết thúc ngày (về
+        # trước 18:45, ăn tối từ 18:00 + đường về): bỏ, không bắt "thiếu bữa" (meal_time_issues).
+        end = to_minutes(window.day_end)
+        if last and run.back > end and end - st.start - (run.back - st.leave) < MEAL_STAY[0]:
+            bad.append(st.place_id)
+            continue
         waits_ok = last or any(i > k for i in timed)
         if not in_window or (st.wait > MEAL_WAIT_MAX and not waits_ok):
             bad.append(st.place_id)
@@ -678,7 +686,9 @@ MAX_CACHED_RUNS = 20_000
 
 def _copy_run(run: Run) -> Run:
     """Bản sao để người gọi sửa (check_plan chèn lỗi vào `issues`) không làm hỏng bản đã nhớ."""
-    return Run(list(run.stops), run.back, list(run.issues), list(run.unchecked), run.rest)
+    return Run(
+        list(run.stops), run.back, list(run.issues), list(run.unchecked), run.rest, list(run.busy)
+    )
 
 
 def simulate(
@@ -702,6 +712,10 @@ def simulate(
     return _copy_run(run)
 
 
+# Chỗ bận của user trong dòng thời gian (chưa biết vị trí): phút đi từ đó ước BUSY_TRAVEL_MIN.
+BUSY = "__busy__"
+
+
 def _simulate(
     plan: DayPlan,
     places: dict[str, Place],
@@ -712,7 +726,13 @@ def _simulate(
 ) -> Run:
     """Chạy dòng thời gian 1 lần. Lỗi cứng: tới lúc đóng cửa, chạm khung chặn, về quá giờ kết
     thúc, thiếu nhu cầu bắt buộc. Thiếu giờ mở cửa / thời gian ở lại / phút đi thì ghi
-    "chưa kiểm được", không tự điền."""
+    "chưa kiểm được", không tự điền.
+
+    Khung bận của user (`blocked_slots`, bắt đầu đã gồm đường tới chỗ bận) tự chèn như nghỉ trưa:
+    khung bận bắt đầu trước khi xong chỗ kế tiếp thì đi lo việc bận trước, xong mới tới chỗ đó
+    (đường từ chỗ bận ước BUSY_TRAVEL_MIN phút); khung bận sau chỗ cuối thì đi bận rồi về (giờ về
+    theo giờ xong việc bận). Trước đây dòng thời gian không nhảy qua khung bận: bận 14:00–16:00
+    thì mọi chỗ buổi chiều "chạm giờ bận", lịch nào cũng hỏng."""
     blocked = _slots(window.blocked_slots)
     meal_only = _slots(window.meal_only_slots)
     end = to_minutes(window.day_end)
@@ -721,28 +741,39 @@ def _simulate(
     stops, issues, unchecked = [], [], []
     eaten: set[str] = set()  # khung giờ ăn đã có bữa (theo giờ bắt đầu ăn)
     prev_meal: int | None = None  # giờ bắt đầu bữa trước
-    rest: tuple[int, int, int] | None = None
+    rest: tuple[int, int, int, str] | None = None
+    # Khung bận còn ở phía trước (khung đang diễn ra lúc rời chỗ ở thì không chèn được: chỗ nào
+    # nằm trong đó vẫn là lỗi "chạm giờ bận").
+    pending = sorted(slot for slot in blocked if slot[0] >= t)
+    busy: list[tuple[int, int, int]] = []
     # Còn chỗ hẹn giờ phía sau: tới quán sớm thì ngồi chờ tới giờ ăn cũng được (đằng nào cũng
     # phải đợi giờ hẹn), không coi là lệch giờ ăn.
     timed = [i for i, pid in enumerate(plan.stops) if places[pid].must and places[pid].must_time]
-    for k, pid in enumerate(plan.stops):
+
+    def visit(
+        k: int, pid: str, t: int, prev: str
+    ) -> tuple[int, int, int, int, int, list[str], list[str]]:
+        """Chỗ thứ k khi rời chỗ trước lúc `t` -> (tới, bắt đầu, rời, phút đi, chờ, lỗi, chưa
+        kiểm). Không đổi trạng thái chung: chạy lại được sau khi chèn khung bận."""
+        mine: list[str] = []
+        todo: list[str] = []
         p = places[pid]
-        travel = matrix.get((prev, pid))
+        travel = float(BUSY_TRAVEL_MIN) if prev == BUSY else matrix.get((prev, pid))
         if travel is None and prev in places and places[prev].kind == "rest":
             travel = estimate_minutes(
                 places[prev], p, None
             )  # quán nghỉ trưa không có trong ma trận
         if travel is None:
-            unchecked.append(f"chưa có phút đi tới {p.name}")
+            todo.append(f"chưa có phút đi tới {p.name}")
             travel = 0
         travel = round(travel)  # ma trận trả phút lẻ (5.9); lịch tính theo phút nguyên
         arrive = t + travel
         span = p.hours.get(plan.day, "missing")
         if span is None:
-            issues.append(f"{p.name} đóng cửa ngày {plan.day}")
+            mine.append(f"{p.name} đóng cửa ngày {plan.day}")
             open_, close = 0, 0
         elif span == "missing":
-            unchecked.append(f"chưa có giờ mở cửa của {p.name}")
+            todo.append(f"chưa có giờ mở cửa của {p.name}")
             open_, close = 0, 24 * 60
         else:
             open_, close = span  # type: ignore[misc]
@@ -807,58 +838,104 @@ def _simulate(
             )
         )
         if not early and not evening and start - arrive - meal_wait > LONG_WAIT_MAX:
-            issues.append(
+            mine.append(
                 f"tới {p.name} lúc {hhmm(arrive)}, phải chờ {start - arrive} phút tới "
                 f"{hhmm(start)} mới vào được"
             )
         if window_ is not None and start > window_[1]:
-            issues.append(
+            mine.append(
                 f"tới {p.name} lúc {hhmm(start)}, trễ so với giờ bạn muốn "
                 f"({must_time_text(p.must_time)})"
             )
         stay = p.stay_high if long_stay else p.stay_low
         if stay is None:
-            unchecked.append(f"chưa có thời gian ở lại của {p.name}")
+            todo.append(f"chưa có thời gian ở lại của {p.name}")
             stay = 0
         leave = start + stay
         if span not in (None, "missing") and leave > close:
-            issues.append(f"{p.name} đóng cửa lúc {hhmm(close)}, ở tới {hhmm(leave)}")
+            mine.append(f"{p.name} đóng cửa lúc {hhmm(close)}, ở tới {hhmm(leave)}")
         for a, b in breaks:
             if start < a < leave:
-                issues.append(f"{p.name} nghỉ {hhmm(a)}–{hhmm(b)}, ở tới {hhmm(leave)}")
+                mine.append(f"{p.name} nghỉ {hhmm(a)}–{hhmm(b)}, ở tới {hhmm(leave)}")
         for a, b in blocked:
             if start < b and leave > a:
-                issues.append(f"{p.name} chạm giờ bận {hhmm(a)}–{hhmm(b)}")
-
+                mine.append(f"{p.name} chạm giờ bận {hhmm(a)}–{hhmm(b)}")
         if p.kind != "meal":
             for a, _b in meal_only:
                 if leave > a:
-                    issues.append(f"{p.name} chạm khung chỉ ăn uống từ {hhmm(a)}")
+                    mine.append(f"{p.name} chạm khung chỉ ăn uống từ {hhmm(a)}")
         for need in required_needs:
             if p.need_status.get(need) == "no":
-                issues.append(f"{p.name} thiếu nhu cầu bắt buộc: {need}")
+                mine.append(f"{p.name} thiếu nhu cầu bắt buộc: {need}")
+        return arrive, start, leave, int(travel), max(0, start - arrive), mine, todo
+
+    for k, pid in enumerate(plan.stops):
+        p = places[pid]
+        while True:
+            arrive, start, leave, travel, wait, mine, todo = visit(k, pid, t, prev)
+            # Khung bận bắt đầu trước khi xong chỗ này: đi lo việc bận trước (kể cả khung rơi vào
+            # lúc đang chờ chỗ này mở cửa), xong mới tới chỗ này.
+            slot = next((s for s in pending if t <= s[0] < leave), None)
+            if slot is None:
+                break
+            pending.remove(slot)
+            busy.append((k, slot[0], slot[1]))
+            t, prev = max(t, slot[1]), BUSY
+        issues += mine
+        unchecked += todo
         if p.kind == "meal":
             if (name := meal_of(start)) is not None:
                 eaten.add(name)
             prev_meal = start
-        stops.append(Stop(pid, arrive, start, leave, int(travel), max(0, start - arrive)))
+        stops.append(Stop(pid, arrive, start, leave, travel, wait))
         t, prev = leave, pid
         # Nghỉ trưa: ngày dài, vừa ăn trưa xong và còn chỗ phía sau -> nghỉ NAP_MIN phút (ở chỗ
-        # ở, hay quán cà phê / khách sạn gần quán trưa — `rest_spot`) rồi đi tiếp từ đó.
+        # ở, hay quán cà phê / khách sạn gần quán trưa — `rest_spot`) rồi đi tiếp từ đó. Giờ bận
+        # tới trong lúc nghỉ thì không nghỉ (đi lo việc bận).
         lunch = to_minutes(LUNCH[0]) <= start <= to_minutes(LUNCH[1])
         if window.nap and rest is None and p.kind == "meal" and lunch and k < len(plan.stops) - 1:
             spot, go = rest_spot(p, places, matrix, window.nap_at)
-            rest = (k, leave + go, leave + go + NAP_MIN, spot)
-            t, prev = rest[2], spot
+            if not any(leave <= a < leave + go + NAP_MIN for a, _b in pending):
+                rest = (k, leave + go, leave + go + NAP_MIN, spot)
+                t, prev = rest[2], spot
     back_travel = matrix.get((prev, STAY))
     if back_travel is None and plan.stops:
         unchecked.append("chưa có phút đi về chỗ ở")
         back_travel = 0
     back = t + round(back_travel or 0)
-    if back > end:
+    # Khung bận sau chỗ cuối (trước giờ kết thúc ngày): đi lo việc bận rồi mới về; giờ về theo
+    # giờ xong việc bận, không tính là về trễ.
+    later = [s for s in pending if t <= s[0] < end]
+    free_from, home = t, back - t
+    if later:
+        busy += [(len(stops), a, b) for a, b in later]
+        free_from, home = max(b for _a, b in later), BUSY_TRAVEL_MIN
+        back = free_from + home
+    elif back > end:
         issues.append(f"về chỗ ở lúc {hhmm(back)}, quá giờ kết thúc ngày {hhmm(end)}")
-    issues += meal_time_issues(plan, stops, places, back, window)
-    return Run(stops, back, list(dict.fromkeys(issues)), list(dict.fromkeys(unchecked)), rest)
+    issues += meal_time_issues(
+        plan, stops, places, back, window, notes=unchecked, free_from=free_from, home=home
+    )
+    return Run(
+        stops,
+        back,
+        list(dict.fromkeys(issues)),
+        list(dict.fromkeys(unchecked)),
+        rest,
+        busy,
+    )
+
+
+def needed_meals(window: DayWindow) -> set[str]:
+    """Bữa bắt buộc của ngày (`required_meals`), trừ bữa đang bận / dự tiệc phủ giờ ăn (VD tiệc
+    cưới từ 16:45: ăn ở đó, không bắt xếp thêm quán)."""
+    need = set(required_meals(window.day_start, window.day_end))
+    busy = _slots(window.blocked_slots + window.meal_only_slots)
+    for name, (m0, m1) in MEALS.items():
+        a0, a1 = to_minutes(m0), to_minutes(m1)
+        if any(min(b1, a1) - max(b0, a0) >= MEAL_MIN_OVERLAP for b0, b1 in busy):
+            need.discard(name)
+    return need
 
 
 def meal_time_issues(
@@ -867,21 +944,21 @@ def meal_time_issues(
     places: dict[str, Place],
     back: int,
     window: DayWindow | None = None,
+    notes: list[str] | None = None,
+    free_from: int | None = None,
+    home: int | None = None,
 ) -> list[str]:
     """Quán ăn phải vào khung sáng / trưa / tối (`MEALS`), mỗi khung 1 bữa. Bữa bắt buộc theo
     giờ rảnh của NGÀY (`required_meals`): ngày trọn vẹn đủ 3 bữa, ngày đến trưa thì trưa + tối…
-    — thiếu là lỗi, trừ khi đang ở một chỗ trùm cả khung (khu vui chơi 4 tiếng: ăn trong đó).
-    Không có `window` thì chỉ bắt bữa lịch đi trọn khung (cách cũ)."""
+    — thiếu là lỗi, trừ khi đang ở một chỗ trùm cả khung (khu vui chơi 4 tiếng: ăn trong đó),
+    hay sau chỗ cuối không còn đủ giờ cho bữa ngắn nhất (`MEAL_STAY`) rồi về chỗ ở trước giờ kết
+    thúc ngày (về trước 18:45: ăn tối 18:00–18:45 thì về trễ) — khi đó ghi vào `notes` (ăn gần chỗ
+    ở), không phải lỗi. `free_from` / `home`: lúc rảnh trở lại sau việc cuối của lịch và phút về
+    chỗ ở từ đó (mặc định: chỗ cuối, `back`; có khung bận sau chỗ cuối thì tính từ lúc xong việc
+    bận). Không có `window` thì chỉ bắt bữa lịch đi trọn khung (cách cũ)."""
     out = []
     windows = MEALS
-    need = set(required_meals(window.day_start, window.day_end)) if window else set()
-    # Đang bận / dự tiệc phủ giờ ăn (VD tiệc cưới từ 16:45): ăn ở đó, không bắt xếp thêm quán.
-    if window:
-        busy = _slots(window.blocked_slots + window.meal_only_slots)
-        for name, (m0, m1) in MEALS.items():
-            a0, a1 = to_minutes(m0), to_minutes(m1)
-            if any(min(b1, a1) - max(b0, a0) >= MEAL_MIN_OVERLAP for b0, b1 in busy):
-                need.discard(name)
+    need = needed_meals(window) if window else set()
     # Bắt đầu ngày sớm (≤ 08:00): ăn sáng là việc đầu tiên, trước BREAKFAST_FIRST_BY.
     if (
         window
@@ -927,7 +1004,18 @@ def meal_time_issues(
         elif not eaten.get(name) and not any(
             s.start <= to_minutes(a) and s.leave >= to_minutes(b) for s in stops
         ):
-            if name in need:
+            if name in need and window is not None:
+                last = free_from if free_from is not None else (stops[-1].leave if stops else leave)
+                ride = home if home is not None else (back - last if stops else 0)
+                room = to_minutes(window.day_end) - max(last, to_minutes(a)) - ride
+                if room < MEAL_STAY[0]:
+                    if notes is not None:
+                        notes.append(
+                            f"không đủ giờ ăn {name} trước giờ về {window.day_end}: ăn gần chỗ ở"
+                        )
+                    continue
+                out.append(f"thiếu bữa {name} ({a}–{b}): ngày nào cũng phải đủ bữa")
+            elif name in need:
                 out.append(f"thiếu bữa {name} ({a}–{b}): ngày nào cũng phải đủ bữa")
             elif leave <= to_minutes(a) and back >= to_minutes(b):
                 out.append(f"đi suốt giờ ăn {name} ({a}–{b}) mà không có quán ăn")
@@ -966,7 +1054,9 @@ def check_plan(
     lacking = [places[pid].name for pid in required or [] if pid not in plan.stops]
     if lacking:
         short.issues.insert(0, f"thiếu chỗ bạn chọn: {', '.join(lacking)}")
-    if not plan.stops:
+    # Lịch trống chỉ là lỗi khi ngày có việc phải làm (bữa bắt buộc / chỗ user chọn): ngày tới
+    # nơi 19:45, về chỗ ở 20:45 thì không xếp gì là đúng, trước đây bị báo "dữ liệu thiếu".
+    if not plan.stops and (needed_meals(window) or required):
         short.issues.insert(
             0, "ngày này không còn chỗ nào hợp lệ để xếp (dữ liệu điểm đến thiếu hoặc bị lọc hết)"
         )
